@@ -1,0 +1,51 @@
+{
+  "seed": 974,
+  "paper": {
+    "source": "assets/parchment-00.jpg",
+    "tint": "#d2b684"
+  },
+  "palette": {
+    "outside": "#2b241d",
+    "land": "#9f815f",
+    "countryInk": "#34271e",
+    "provinceInk": "#584432",
+    "districtInk": "#725d47"
+  },
+  "previews": [
+    {
+      "id": "world",
+      "title": "World overview",
+      "width": 8192,
+      "height": 4096,
+      "bounds": [-180, -90, 180, 90],
+      "layers": ["ADM0", "ADM1"],
+      "source": "natural-earth",
+      "paperMargin": 132
+    },
+    {
+      "id": "china-east",
+      "title": "China east detail",
+      "width": 4096,
+      "height": 3072,
+      "bounds": [98, 18, 136, 46],
+      "layers": ["ADM0", "ADM1", "ADM2"],
+      "source": "geoboundaries",
+      "countries": ["CHN"],
+      "overrides": {
+        "ADM2": "gadm/CHN-ADM2.geojson"
+      },
+      "paperMargin": 96
+    },
+    {
+      "id": "new-zealand",
+      "title": "New Zealand detail",
+      "width": 4096,
+      "height": 3072,
+      "bounds": [165, -48, 179.5, -33],
+      "layers": ["ADM0", "ADM1", "ADM2"],
+      "source": "geoboundaries",
+      "countries": ["NZL"],
+      "paperMargin": 96
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "name": "@ysoseri/travel-map-renderer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "fetch:data": "node scripts/fetch-geoboundaries.mjs",
+    "render:preview": "node scripts/render-preview.mjs",
+    "preview": "npm run fetch:data && npm run render:preview"
+  },
+  "dependencies": {
+    "@napi-rs/canvas": "^0.1.80",
+    "d3-geo": "^3.1.1",
+    "sharp": "^0.35.0"
+  }
+}
