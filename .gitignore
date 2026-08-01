@@ -2,3 +2,15 @@
 map-renderer/.cache/
 map-renderer/node_modules/
 map-renderer/output/
+node_modules/
+.astro/
+dist/
+.dev.vars
+public/maps/
+public/paper-props/
+public/tiles/
+worker-configuration.d.ts
+*.log
+*.cpuprofile
+test-results/
+playwright-report/

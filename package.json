@@ -1,0 +1,47 @@
+{
+  "name": "@ysoseri/travel",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev",
+    "prepare:assets": "node scripts/prepare-assets.mjs",
+    "render:tiles": "node scripts/render-tiles.mjs",
+    "upload:tiles": "node scripts/upload-tiles.mjs",
+    "check:i18n": "node scripts/check-i18n.mjs",
+    "build": "npm run check:i18n && npm run prepare:assets && astro build",
+    "typecheck": "astro check && tsc --noEmit -p tsconfig.worker.json",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "cf:types": "wrangler types",
+    "deploy": "npm run build && wrangler deploy",
+    "preview": "wrangler dev"
+  },
+  "dependencies": {
+    "@astrojs/react": "^4.4.2",
+    "@fontsource/im-fell-english": "^5.3.0",
+    "@fontsource/lxgw-wenkai": "^5.3.0",
+    "astro": "^5.13.5",
+    "d3-geo": "^3.1.1",
+    "dompurify": "^3.2.6",
+    "lucide-react": "^0.468.0",
+    "marked": "^16.1.2",
+    "ol": "^10.6.1",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
+  },
+  "devDependencies": {
+    "@astrojs/check": "^0.9.4",
+    "@aws-sdk/client-s3": "^3.883.0",
+    "@cloudflare/workers-types": "^5.20260731.1",
+    "@playwright/test": "^1.54.2",
+    "@types/d3-geo": "^3.1.0",
+    "@types/node": "^26.1.2",
+    "@types/react": "^19.1.10",
+    "@types/react-dom": "^19.1.7",
+    "sharp": "^0.34.3",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4",
+    "wrangler": "^4.118.0"
+  }
+}

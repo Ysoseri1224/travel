@@ -1,0 +1,10 @@
+declare global {
+  interface Env {
+    TRAVEL_PASSWORD: string;
+    TRAVEL_SESSION_SECRET: string;
+    AMAP_PLACE_API_KEY: string;
+    GOOGLE_PLACES_API_KEY: string;
+  }
+}
+
+export {};

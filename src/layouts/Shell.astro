@@ -1,0 +1,48 @@
+---
+import TravelApp from '../components/TravelApp';
+import '../styles/global.css';
+import '@fontsource/im-fell-english/400.css';
+import '@fontsource/lxgw-wenkai/500.css';
+
+interface Props {
+  manage?: boolean;
+}
+
+const { manage = false } = Astro.props;
+const title = manage ? 'Travel Map Management · ysoseri.us' : 'Travel Map · ysoseri.us';
+const description = 'A parchment map of real places, footprints, and their stories.';
+---
+
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="description" content={description} />
+    <meta name="theme-color" content="#2b241d" />
+    <meta name="color-scheme" content="light" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <meta name="robots" content={manage ? 'noindex, nofollow' : 'index, follow, max-image-preview:large'} />
+    <link rel="canonical" href={manage ? 'https://travel.ysoseri.us/manage' : 'https://travel.ysoseri.us/'} />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={manage ? 'https://travel.ysoseri.us/manage' : 'https://travel.ysoseri.us/'} />
+    <meta property="og:image" content="https://travel.ysoseri.us/maps/world-parchment-v1.webp" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <Fragment set:html={'<!--TRAVEL_HEAD-->'} />
+    <title>{title}</title>
+  </head>
+  <body>
+    <TravelApp client:only="react" manageRequested={manage} />
+    <noscript>
+      <main class="noscript-copy">
+        <h1>Travel Map · 旅行地图</h1>
+        <p>{description}</p>
+        <p>此地图需要 JavaScript 以提供拖拽和缩放交互。</p>
+        <Fragment set:html={'<!--TRAVEL_PIN_LINKS-->'} />
+      </main>
+    </noscript>
+    <Fragment set:html={'<!--TRAVEL_INITIAL_DATA-->'} />
+  </body>
+</html>

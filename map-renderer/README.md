@@ -25,6 +25,16 @@ npm run render:preview
 
 `MAP_RENDER_DEBUG=1` 会把纸张蒙版、陆地蒙版和各级墨线层写入 `.cache/debug/`，用于排查合成故障。
 
+## 纸张覆盖层素材
+
+生成便利贴与相纸透明母版：
+
+```powershell
+npm run render:props
+```
+
+输出写入 `../assets/paper-props/v1/`，包括 PNG 母版、运行时 WebP、内容窗口 manifest 和总览预览。命令结束前会自动验证尺寸、alpha 通道、透明内容窗与安全区。
+
 ## 当前边界
 
 - 这是制图与材质方向样张，不是最终 Deep Zoom 瓦片金字塔。

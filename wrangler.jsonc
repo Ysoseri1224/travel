@@ -1,0 +1,36 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "travel",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-07-31",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "none",
+    "html_handling": "none",
+    "run_worker_first": ["/", "/manage", "/p/*", "/api/*", "/media/*", "/tiles/*", "/robots.txt", "/sitemap.xml"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "travel",
+      "database_id": "9df6bbc3-36c4-42fe-baf2-8824423d2f48",
+      "migrations_dir": "./migrations"
+    }
+  ],
+  "r2_buckets": [
+    { "binding": "TRAVEL_TILES", "bucket_name": "travel-tiles" },
+    { "binding": "MEDIA", "bucket_name": "ysoseri-media" },
+    { "binding": "BACKUPS", "bucket_name": "travel-backups" }
+  ],
+  "triggers": { "crons": ["17 13 * * *"] },
+  "routes": [
+    { "pattern": "travel.ysoseri.us/*", "zone_name": "ysoseri.us" }
+  ],
+  "vars": {
+    "APP_ORIGIN": "https://travel.ysoseri.us",
+    "TILE_VERSION": "v1"
+  },
+  "observability": { "enabled": true, "head_sampling_rate": 1 }
+}

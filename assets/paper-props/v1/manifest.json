@@ -1,0 +1,86 @@
+{
+  "version": 1,
+  "source": "map-renderer/assets/parchment-00.jpg",
+  "dynamicEffects": [
+    "shadow",
+    "rotation",
+    "pin",
+    "hover-lift"
+  ],
+  "assets": [
+    {
+      "id": "note-warm-square",
+      "kind": "note",
+      "width": 2048,
+      "height": 2048,
+      "safeArea": {
+        "x": 238,
+        "y": 260,
+        "width": 1572,
+        "height": 1498
+      },
+      "png": "note-warm-square-v1.png",
+      "webp": "note-warm-square-v1.webp"
+    },
+    {
+      "id": "photo-classic",
+      "kind": "photo",
+      "width": 2048,
+      "height": 2560,
+      "contentWindow": {
+        "x": 184,
+        "y": 184,
+        "width": 1680,
+        "height": 1680
+      },
+      "captionArea": {
+        "x": 238,
+        "y": 1960,
+        "width": 1572,
+        "height": 342
+      },
+      "png": "photo-classic-v1.png",
+      "webp": "photo-classic-v1.webp"
+    },
+    {
+      "id": "photo-landscape",
+      "kind": "photo",
+      "width": 3072,
+      "height": 2304,
+      "contentWindow": {
+        "x": 220,
+        "y": 220,
+        "width": 2632,
+        "height": 1480
+      },
+      "captionArea": {
+        "x": 280,
+        "y": 1788,
+        "width": 2512,
+        "height": 292
+      },
+      "png": "photo-landscape-v1.png",
+      "webp": "photo-landscape-v1.webp"
+    },
+    {
+      "id": "photo-portrait",
+      "kind": "photo",
+      "width": 2304,
+      "height": 3072,
+      "contentWindow": {
+        "x": 188,
+        "y": 188,
+        "width": 1928,
+        "height": 2410
+      },
+      "captionArea": {
+        "x": 252,
+        "y": 2680,
+        "width": 1800,
+        "height": 194
+      },
+      "png": "photo-portrait-v1.png",
+      "webp": "photo-portrait-v1.webp"
+    }
+  ]
+}
