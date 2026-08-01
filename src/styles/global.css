@@ -221,7 +221,7 @@ select:focus-visible {
 .search-attribution { margin: 10px 2px 0; color: var(--paper-muted); font: 10px/1.4 sans-serif; }
 .language-switch { margin-left: auto; padding: 3px 5px; border: 0; background: transparent; color: var(--paper-muted); cursor: pointer; font-size: 12px; }
 
-.pin-anchor { position: relative; width: 52px; height: 64px; transform: translate(-26px, -56px); pointer-events: auto; }
+.pin-anchor { position: relative; width: 52px; height: 58px; pointer-events: auto; }
 .pin-button {
   appearance: none;
   -webkit-appearance: none;
@@ -232,12 +232,13 @@ select:focus-visible {
   height: 58px;
   padding: 0;
   border: 0;
-  background: center / contain no-repeat var(--pin-image);
+  background: transparent;
   cursor: pointer;
   filter: drop-shadow(1px 3px 2px rgba(30,18,12,.16));
   transition: transform 140ms ease, filter 140ms ease;
   z-index: 3;
 }
+.pin-button img { display: block; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
 .pin-button:hover { transform: translateY(-2px); filter: drop-shadow(2px 6px 3px rgba(30,18,12,.22)); }
 .pin-button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; border-radius: 45%; }
 .world-mode .pin-button { cursor: default; }

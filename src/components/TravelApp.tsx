@@ -177,6 +177,24 @@ function createCountryProjection(country: CountryCatalogItem, manifest: CountryP
   return olProjection;
 }
 
+function centerForPixel(coordinate: number[], size: [number, number], resolution: number, pixel: [number, number]): number[] {
+  return [
+    coordinate[0] - (pixel[0] - size[0] / 2) * resolution,
+    coordinate[1] + (pixel[1] - size[1] / 2) * resolution
+  ];
+}
+
+function focusViewOnPin(view: View, map: Map, coordinate: number[], resolution: number, duration: number): void {
+  const size = map.getSize();
+  if (!size?.[0] || !size[1]) {
+    view.animate({ center: coordinate, resolution, duration });
+    return;
+  }
+  const targetPixel: [number, number] = [size[0] / 2, size[1] * 0.67];
+  const targetCenter = centerForPixel(coordinate, [size[0], size[1]], resolution, targetPixel);
+  view.animate({ center: targetCenter, resolution, duration });
+}
+
 export default function TravelApp({ manageRequested = false }: Props) {
   const mapTargetRef = useRef<HTMLDivElement>(null);
   const [panelHost] = useState(() => {
@@ -189,7 +207,7 @@ export default function TravelApp({ manageRequested = false }: Props) {
   const pinOverlaysRef = useRef<Overlay[]>([]);
   const ghostSourceRef = useRef(new VectorSource());
   const ghostFeatureRef = useRef<Feature<Point> | null>(null);
-  const openViewRef = useRef<{ center: number[]; zoom: number } | null>(null);
+  const openViewRef = useRef<{ center: number[]; resolution: number } | null>(null);
   const initialPathHandled = useRef(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const authRevisionRef = useRef(0);
@@ -198,7 +216,7 @@ export default function TravelApp({ manageRequested = false }: Props) {
   const scaleFrameRef = useRef<number | null>(null);
   const activeProjectionRef = useRef<Projection>(MAP_PROJECTION);
   const countryBaseResolutionRef = useRef<number | null>(null);
-  const pendingFocusRef = useRef<[number, number] | null>(null);
+  const pendingFocusRef = useRef<{ coordinate: [number, number]; zoom: number } | null>(null);
 
   const [locale, setLocale] = useState<Locale>('zh');
   const [pins, setPins] = useState<Pin[]>(() => window.__TRAVEL_INITIAL__?.pins || []);
@@ -495,9 +513,10 @@ export default function TravelApp({ manageRequested = false }: Props) {
     };
     map.getViewport().addEventListener('contextmenu', onContextMenu);
     if (pendingFocusRef.current) {
-      const coordinate = transform(pendingFocusRef.current, 'EPSG:4326', projection);
+      const request = pendingFocusRef.current;
+      const coordinate = transform(request.coordinate, 'EPSG:4326', projection);
       pendingFocusRef.current = null;
-      view.animate({ center: coordinate, resolution: baseResolution / 2 ** 5, duration: 520 });
+      focusViewOnPin(view, map, coordinate, baseResolution / 2 ** request.zoom, 520);
     }
     setMapReady(true);
     return () => {
@@ -519,19 +538,19 @@ export default function TravelApp({ manageRequested = false }: Props) {
         : pinOrId;
       const pinCountry = pin.country_code ? countries.find((country) => country.countryCode === pin.country_code) : null;
       if (pinCountry && (!activeCountry || activeCountry.countryCode !== pinCountry.countryCode)) {
-        pendingFocusRef.current = [pin.lng, pin.lat];
+        pendingFocusRef.current = { coordinate: [pin.lng, pin.lat], zoom: 6 };
         await selectCountry(pinCountry);
       }
       const map = mapRef.current;
       if (map && !openViewRef.current) {
-        openViewRef.current = { center: [...(map.getView().getCenter() || [4096, -2048])], zoom: map.getView().getZoom() || 1 };
+        openViewRef.current = { center: [...(map.getView().getCenter() || [4096, -2048])], resolution: map.getView().getResolution() || 1 };
       }
       setSelected(pin);
       setDraft(null);
       if (updateAddress && window.location.pathname !== `/p/${pin.id}`) history.pushState({ pinId: pin.id }, '', `/p/${pin.id}`);
       const coordinate = transform([pin.lng, pin.lat], 'EPSG:4326', activeProjectionRef.current);
-      if (map && activeCountry && (map.getView().getResolution() || 0) > (countryBaseResolutionRef.current || 1) / 2 ** 3) {
-        map.getView().animate({ center: coordinate, resolution: (countryBaseResolutionRef.current || 1) / 2 ** 5, duration: 420 });
+      if (map && activeCountry) {
+        focusViewOnPin(map.getView(), map, coordinate, (countryBaseResolutionRef.current || 1) / 2 ** 6, 420);
       }
     } catch {
       showToast(t('notFoundTitle'));
@@ -550,7 +569,7 @@ export default function TravelApp({ manageRequested = false }: Props) {
     if (updateAddress && window.location.pathname.startsWith('/p/')) history.pushState({}, '', managementActive ? '/manage' : '/');
     const map = mapRef.current;
     if (map && openViewRef.current) {
-      map.getView().animate({ center: openViewRef.current.center, zoom: openViewRef.current.zoom, duration: 360 });
+      map.getView().animate({ center: openViewRef.current.center, resolution: openViewRef.current.resolution, duration: 360 });
       openViewRef.current = null;
     }
   }, [dirty, draft, managementActive]);
@@ -586,7 +605,12 @@ export default function TravelApp({ manageRequested = false }: Props) {
       button.className = 'pin-button';
       button.type = 'button';
       if (worldMode) button.disabled = true;
-      button.style.setProperty('--pin-image', `url('${PIN_ASSETS[pin.color.toLowerCase()] || PIN_ASSETS[PIN_COLORS[0]]}')`);
+      const pinImage = document.createElement('img');
+      pinImage.src = PIN_ASSETS[pin.color.toLowerCase()] || PIN_ASSETS[PIN_COLORS[0]];
+      pinImage.alt = '';
+      pinImage.setAttribute('aria-hidden', 'true');
+      pinImage.draggable = false;
+      button.append(pinImage);
       button.setAttribute('aria-label', t('pinLabel', { title: pin.title }));
       if (!worldMode) button.addEventListener('click', (event) => { event.stopPropagation(); void openPin(pin); });
       element.append(button);
@@ -599,7 +623,7 @@ export default function TravelApp({ manageRequested = false }: Props) {
       }
 
       if (worldMode) {
-        const overlay = new Overlay({ element, positioning: 'center-center', stopEvent: false });
+        const overlay = new Overlay({ element, positioning: 'bottom-center', stopEvent: false });
         overlay.setPosition(transform([pin.lng, pin.lat], 'EPSG:4326', projection));
         map.addOverlay(overlay);
         pinOverlaysRef.current.push(overlay);
@@ -631,7 +655,7 @@ export default function TravelApp({ manageRequested = false }: Props) {
       }
       keepsake.addEventListener('click', (event) => { event.stopPropagation(); void openPin(pin); });
       element.append(keepsake);
-      const overlay = new Overlay({ element, positioning: 'center-center', stopEvent: true });
+      const overlay = new Overlay({ element, positioning: 'bottom-center', stopEvent: true });
       overlay.setPosition(transform([pin.lng, pin.lat], 'EPSG:4326', projection));
       map.addOverlay(overlay);
       pinOverlaysRef.current.push(overlay);
@@ -644,16 +668,54 @@ export default function TravelApp({ manageRequested = false }: Props) {
       panelOverlayRef.current?.setPosition(undefined);
       return;
     }
-    panelOverlayRef.current?.setElement(panelHost);
-    panelOverlayRef.current?.setPosition(transform([active.lng, active.lat], 'EPSG:4326', activeProjectionRef.current));
     const overlay = panelOverlayRef.current;
-    const keepInsideViewport = () => overlay?.panIntoView({ animation: { duration: 280 }, margin: 28 });
-    const frame = requestAnimationFrame(keepInsideViewport);
-    const observer = new ResizeObserver(() => requestAnimationFrame(keepInsideViewport));
+    const map = mapRef.current;
+    if (!overlay || !map) return;
+    overlay.setElement(panelHost);
+
+    const placePanel = () => {
+      if (!overlay || !map) return;
+      if (!draft) {
+        overlay.setPositioning('center-center');
+        overlay.setOffset([0, 0]);
+        overlay.setPosition(map.getView().getCenter() || transform([active.lng, active.lat], 'EPSG:4326', activeProjectionRef.current));
+        return;
+      }
+      const coordinate = transform([active.lng, active.lat], 'EPSG:4326', activeProjectionRef.current);
+      const size = map.getSize();
+      const pixel = size ? map.getPixelFromCoordinate(coordinate) : null;
+      const rect = panelHost.getBoundingClientRect();
+      const margin = 24;
+      let positioning: 'bottom-center' | 'top-center' | 'center-left' | 'center-right' = 'bottom-center';
+      let offset: [number, number] = [0, -14];
+      if (pixel && size) {
+        if (pixel[1] < rect.height + margin) {
+          positioning = 'top-center';
+          offset = [0, 14];
+        } else if (pixel[1] > size[1] - rect.height - margin) {
+          positioning = 'bottom-center';
+        } else if (pixel[0] < rect.width / 2 + margin) {
+          positioning = 'center-left';
+          offset = [14, 0];
+        } else if (pixel[0] > size[0] - rect.width / 2 - margin) {
+          positioning = 'center-right';
+          offset = [-14, 0];
+        }
+      }
+      overlay.setPositioning(positioning);
+      overlay.setOffset(offset);
+      overlay.setPosition(coordinate);
+    };
+
+    const frame = requestAnimationFrame(placePanel);
+    const observer = new ResizeObserver(() => requestAnimationFrame(placePanel));
     observer.observe(panelHost);
+    const onCenter = () => { if (!draft) placePanel(); };
+    map.getView().on('change:center', onCenter);
     return () => {
       cancelAnimationFrame(frame);
       observer.disconnect();
+      map.getView().un('change:center', onCenter);
     };
   }, [Boolean(draft), draft?.id, draft?.lat, draft?.lng, panelHost, selected?.id, selected?.lat, selected?.lng, activeCountry]);
 
@@ -753,7 +815,7 @@ export default function TravelApp({ manageRequested = false }: Props) {
   const chooseCandidate = async (candidate: PlaceCandidate) => {
     const country = countries.find((item) => item.countryCode === candidate.countryCode);
     if (country && (!activeCountry || activeCountry.countryCode !== country.countryCode)) {
-      pendingFocusRef.current = [candidate.lng, candidate.lat];
+      pendingFocusRef.current = { coordinate: [candidate.lng, candidate.lat], zoom: 5 };
       await selectCountry(country);
     }
     const coordinate = transform([candidate.lng, candidate.lat], 'EPSG:4326', activeProjectionRef.current);
@@ -772,7 +834,7 @@ export default function TravelApp({ manageRequested = false }: Props) {
     if (!draft) return;
     const country = countries.find((item) => item.countryCode === candidate.countryCode);
     if (country && (!activeCountry || activeCountry.countryCode !== country.countryCode)) {
-      pendingFocusRef.current = [candidate.lng, candidate.lat];
+      pendingFocusRef.current = { coordinate: [candidate.lng, candidate.lat], zoom: 5 };
       await selectCountry(country);
     }
     const coordinate = transform([candidate.lng, candidate.lat], 'EPSG:4326', activeProjectionRef.current);

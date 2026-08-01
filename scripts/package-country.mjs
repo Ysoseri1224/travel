@@ -34,7 +34,7 @@ const manifest = {
     sha256: createHash('sha256').update(image).digest('hex')
   },
   administrativeLevels: input.countryCode === 'CN'
-    ? [{ from: 0, to: 2, level: 'ADM1' }, { from: 3, to: 6, level: 'ADM2-prefecture' }, { from: 7, to: 14, level: 'ADM2-county' }]
+    ? [{ from: 0, to: 14, level: 'ADM2-county' }]
     : input.countryCode === 'NZ'
       ? [{ from: 0, to: 2, level: 'Region' }, { from: 3, to: 14, level: 'Territorial Authority' }]
       : [{ from: 0, to: 4, level: 'ADM1' }, { from: 5, to: 14, level: 'ADM2' }],

@@ -78,6 +78,7 @@ const iso3 = [properties.ISO_A3_EH, properties.ISO_A3, properties.ADM0_A3]
   .map((value) => String(value || '').toUpperCase())
   .find((value) => /^[A-Z]{3}$/.test(value) && value !== '-99') || '';
 if (!/^[A-Z]{3}$/.test(iso3)) throw new Error(`Country ${countryCode} has no ISO alpha-3 mapping`);
+const renderLayers = countryCode === 'CN' ? ['ADM0', 'ADM2'] : ['ADM0', 'ADM1', 'ADM2'];
 
 const downloaded = {};
 for (const level of ['ADM0', 'ADM1', 'ADM2']) {
@@ -104,7 +105,7 @@ const config = {
   seed: 974,
   paper: { source: 'assets/parchment-00.jpg', tint: '#d2b684' },
   palette: { outside: '#2b241d', land: '#9f815f', countryInk: '#34271e', provinceInk: '#584432', districtInk: '#725d47' },
-  previews: [{ id, title: String(properties.NAME_EN || properties.NAME || iso3), width: 4096, height: 3072, bounds, layers: ['ADM0', 'ADM1', 'ADM2'], source: 'geoboundaries', countries: [iso3], paperMargin: 96 }]
+  previews: [{ id, title: String(properties.NAME_EN || properties.NAME || iso3), width: 4096, height: 3072, bounds, layers: renderLayers, source: 'geoboundaries', countries: [iso3], paperMargin: 96 }]
 };
 await mkdir(path.join(root, 'config'), { recursive: true });
 await writeFile(path.join(root, 'config', 'country-render.json'), `${JSON.stringify(config, null, 2)}\n`);
@@ -115,7 +116,7 @@ await writeFile(path.join(root, 'output', 'country-build-input.json'), `${JSON.s
   nameZh: String(properties.NAME_ZH || properties.NAME_EN || properties.NAME || iso3),
   bounds,
   id,
-  source: 'geoBoundaries gbOpen / GADM for CN ADM2',
+  source: countryCode === 'CN' ? 'geoBoundaries gbOpen ADM0/ADM1 + GADM 4.1 ADM2; ADM1 omitted from raster to avoid source-boundary drift' : 'geoBoundaries gbOpen',
   features: Object.fromEntries(Object.entries(downloaded).map(([level, item]) => [level, item.features]))
 }, null, 2)}\n`);
 console.log(`country render prepared: ${countryCode} (${iso3})`);
