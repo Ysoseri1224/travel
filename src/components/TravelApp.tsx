@@ -497,7 +497,7 @@ export default function TravelApp({ manageRequested = false }: Props) {
       positioning: 'bottom-center',
       offset: [0, -42],
       stopEvent: true,
-      autoPan: { animation: { duration: 280 }, margin: 28 }
+      autoPan: false
     });
     map.addOverlay(panelOverlay);
     panelOverlayRef.current = panelOverlay;
