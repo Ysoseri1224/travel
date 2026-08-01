@@ -538,7 +538,7 @@ export default function TravelApp({ manageRequested = false }: Props) {
         : pinOrId;
       const pinCountry = pin.country_code ? countries.find((country) => country.countryCode === pin.country_code) : null;
       if (pinCountry && (!activeCountry || activeCountry.countryCode !== pinCountry.countryCode)) {
-        pendingFocusRef.current = { coordinate: [pin.lng, pin.lat], zoom: 6 };
+        pendingFocusRef.current = { coordinate: [pin.lng, pin.lat], zoom: 5 };
         await selectCountry(pinCountry);
       }
       const map = mapRef.current;
@@ -550,7 +550,7 @@ export default function TravelApp({ manageRequested = false }: Props) {
       if (updateAddress && window.location.pathname !== `/p/${pin.id}`) history.pushState({ pinId: pin.id }, '', `/p/${pin.id}`);
       const coordinate = transform([pin.lng, pin.lat], 'EPSG:4326', activeProjectionRef.current);
       if (map && activeCountry) {
-        focusViewOnPin(map.getView(), map, coordinate, (countryBaseResolutionRef.current || 1) / 2 ** 6, 420);
+        focusViewOnPin(map.getView(), map, coordinate, (countryBaseResolutionRef.current || 1) / 2 ** 5, 420);
       }
     } catch {
       showToast(t('notFoundTitle'));
