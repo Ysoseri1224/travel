@@ -24,7 +24,7 @@ test('world map renders with interactive search', async ({ page }, testInfo) => 
   expect(browserErrors).toEqual([]);
 });
 
-test('desktop management opens an anchored editor', async ({ page }, testInfo) => {
+test('desktop management keeps the map interactive beside a fixed editor drawer', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== 'desktop', 'editing is desktop-only');
   await page.goto('/manage');
   await expect(page.locator('.login-form')).toBeVisible();
@@ -32,28 +32,55 @@ test('desktop management opens an anchored editor', async ({ page }, testInfo) =
   await page.locator('.login-form button[type="submit"]').click();
   await expect(page.locator('.modal-backdrop')).toHaveCount(0, { timeout: 15_000 });
 
-  await page.goto('/');
-  await expect(page.locator('.action-manage .lucide-log-out')).toHaveCount(0);
-  await page.locator('.action-manage').click();
-  await expect(page).toHaveURL(/\/manage$/);
   await expect(page.locator('.action-manage .lucide-log-out')).toBeVisible();
+  await page.locator('.action-map').click();
+  await page.locator('.country-menu button').filter({ hasText: /中华人民共和国|China/ }).click();
+  await expect(page.locator('.country-mode')).toBeVisible();
+  await expect(page.locator('.zoom-local')).toHaveCount(0);
+
+  const placeLabel = page.locator('.place-label').first();
+  await expect(placeLabel).toBeVisible();
+  await expect(placeLabel).toHaveCSS('opacity', '0.9');
+  await page.waitForTimeout(700);
+
+  const pinState = await page.locator('.pin-button:not([disabled])').evaluateAll((buttons) => {
+    const target = buttons.find((button) => button.getBoundingClientRect().x > 600) || buttons[0];
+    const rect = target.parentElement!.getBoundingClientRect();
+    const label = target.getAttribute('aria-label') || '';
+    (target as HTMLButtonElement).click();
+    return { label, x: rect.x, y: rect.y };
+  });
+  const drawer = page.locator('.editor-drawer');
+  await expect(drawer).toBeVisible();
+  await expect(page).toHaveURL(/\/manage$/);
+  await page.waitForTimeout(500);
+  const drawerBox = await drawer.boundingBox();
+  expect(drawerBox?.x).toBeLessThanOrEqual(1);
+  expect(drawerBox?.width).toBeGreaterThanOrEqual(480);
+  expect(drawerBox?.height).toBeGreaterThanOrEqual(890);
+
+  const pinAfter = await page.evaluate((label) => {
+    const target = [...document.querySelectorAll('.pin-button')].find((button) => button.getAttribute('aria-label') === label);
+    const rect = target?.parentElement?.getBoundingClientRect();
+    return rect ? { x: rect.x, y: rect.y } : null;
+  }, pinState.label);
+  expect(Math.abs((pinAfter?.x || 0) - pinState.x)).toBeLessThanOrEqual(1);
+  expect(Math.abs((pinAfter?.y || 0) - pinState.y)).toBeLessThanOrEqual(1);
 
   const map = page.locator('.map-canvas');
   const box = await map.boundingBox();
   if (!box) throw new Error('map has no bounding box');
-  await page.mouse.click(box.x + box.width * .58, box.y + box.height * .62, { button: 'right' });
-  await expect(page.locator('.editor-form')).toBeVisible();
-  await page.locator('.panel-actions .icon-command').click();
-  await expect(page).toHaveURL(/\/manage$/);
+  await page.mouse.click(box.x + box.width * .72, box.y + box.height * .62, { button: 'right' });
+  await expect(page.locator('.editor-form input').first()).toHaveValue('');
 
-  await page.mouse.click(box.x + box.width * .58, box.y + box.height * .62, { button: 'right' });
-  await expect(page.locator('.editor-form')).toBeVisible();
-  await page.locator('.editor-form input').first().fill('Browser acceptance note');
-  await page.locator('.editor-form textarea').fill('A short **Markdown** note.');
-  await page.screenshot({ path: testInfo.outputPath('anchored-editor.png'), fullPage: true });
-  const editorBox = await page.locator('.node-overlay').boundingBox();
-  expect(editorBox?.width).toBeGreaterThanOrEqual(480);
-  expect(editorBox?.height).toBeLessThanOrEqual(630);
+  await page.locator('.editor-form input').first().fill('Unsaved browser note');
+  await page.mouse.click(box.x + box.width * .8, box.y + box.height * .7, { button: 'right' });
+  const discardDialog = page.getByRole('alertdialog');
+  await expect(discardDialog).toBeVisible();
+  await discardDialog.locator('.danger').click();
+  await expect(discardDialog).toHaveCount(0);
+  await expect(page.locator('.editor-form input').first()).toHaveValue('');
+  await page.screenshot({ path: testInfo.outputPath('fixed-editor-drawer.png'), fullPage: true });
 });
 
 test('mobile remains a clean read-only map', async ({ page }, testInfo) => {

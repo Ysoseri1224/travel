@@ -82,6 +82,11 @@ interface DraftPin {
   media: MediaAsset[];
 }
 
+interface EditorTarget {
+  draft: DraftPin;
+  selected: Pin | null;
+}
+
 interface Props { manageRequested?: boolean; }
 
 interface CountryCatalogItem {
@@ -217,6 +222,7 @@ export default function TravelApp({ manageRequested = false }: Props) {
   const activeProjectionRef = useRef<Projection>(MAP_PROJECTION);
   const countryBaseResolutionRef = useRef<number | null>(null);
   const pendingFocusRef = useRef<{ coordinate: [number, number]; zoom: number } | null>(null);
+  const editorStateRef = useRef<{ draft: DraftPin | null; dirty: boolean }>({ draft: null, dirty: false });
 
   const [locale, setLocale] = useState<Locale>('zh');
   const [pins, setPins] = useState<Pin[]>(() => window.__TRAVEL_INITIAL__?.pins || []);
@@ -244,6 +250,7 @@ export default function TravelApp({ manageRequested = false }: Props) {
   const [uploading, setUploading] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const [pendingEditorTarget, setPendingEditorTarget] = useState<EditorTarget | null>(null);
   const [lightbox, setLightbox] = useState<MediaAsset | null>(null);
   const [toast, setToast] = useState('');
   const [mapReady, setMapReady] = useState(false);
@@ -255,6 +262,7 @@ export default function TravelApp({ manageRequested = false }: Props) {
   const [countryLoading, setCountryLoading] = useState(false);
 
   permissionRef.current = { authenticated: session.authenticated, managementActive };
+  editorStateRef.current = { draft, dirty };
 
   const t = useCallback((key: TranslationKey, values?: Record<string, string | number>) => translate(locale, key, values), [locale]);
   const renderedContent = useMemo(() => DOMPurify.sanitize(marked.parse(selected?.content || '') as string), [selected?.content]);
@@ -263,6 +271,23 @@ export default function TravelApp({ manageRequested = false }: Props) {
   const showToast = useCallback((message: string) => {
     setToast(message);
     window.setTimeout(() => setToast(''), 2800);
+  }, []);
+
+  const requestEditor = useCallback((nextDraft: DraftPin, nextSelected: Pin | null) => {
+    const current = editorStateRef.current;
+    if (current.draft?.id && current.draft.id === nextDraft.id) return true;
+    if (current.draft && current.dirty) {
+      setPendingEditorTarget({ draft: nextDraft, selected: nextSelected });
+      setConfirmDiscard(true);
+      return false;
+    }
+    editorStateRef.current = { draft: nextDraft, dirty: false };
+    setSelected(nextSelected);
+    setDraft(nextDraft);
+    setDirty(false);
+    setEditorMode('write');
+    history.replaceState({}, '', '/manage');
+    return true;
   }, []);
 
   const loadPins = useCallback(async () => {
@@ -455,7 +480,6 @@ export default function TravelApp({ manageRequested = false }: Props) {
     const updateZoomClass = () => {
       const resolution = view.getResolution() || baseResolution;
       const relativeZoom = Math.max(0, Math.log2(baseResolution / resolution));
-      mapTargetRef.current?.classList.toggle('zoom-city', relativeZoom >= 3);
       mapTargetRef.current?.classList.toggle('zoom-local', relativeZoom >= countryPackage.keepsakesFromZoom);
     };
     const updateScale = () => {
@@ -507,9 +531,7 @@ export default function TravelApp({ manageRequested = false }: Props) {
       if (!permissionRef.current.authenticated || !permissionRef.current.managementActive || isMobileEditor()) return;
       const coordinate = map.getEventCoordinate(event);
       const [lng, lat] = transform(coordinate, projection, 'EPSG:4326');
-      setSelected(null);
-      setDraft(freshDraft(lng, lat));
-      setDirty(false);
+      requestEditor(freshDraft(lng, lat), null);
     };
     map.getViewport().addEventListener('contextmenu', onContextMenu);
     if (pendingFocusRef.current) {
@@ -529,13 +551,17 @@ export default function TravelApp({ manageRequested = false }: Props) {
       mapRef.current = null;
       setMapReady(false);
     };
-  }, [activeCountry, countries, countryPackage, panelHost, selectCountry]);
+  }, [activeCountry, countries, countryPackage, panelHost, requestEditor, selectCountry]);
 
   const openPin = useCallback(async (pinOrId: Pin | string, updateAddress = true) => {
     try {
       const pin = typeof pinOrId === 'string'
         ? await api<Pin>(`/api/pins/${encodeURIComponent(pinOrId)}`)
         : pinOrId;
+      if (permissionRef.current.authenticated && permissionRef.current.managementActive && !isMobileEditor()) {
+        requestEditor(pinToDraft(pin), pin);
+        return;
+      }
       const pinCountry = pin.country_code ? countries.find((country) => country.countryCode === pin.country_code) : null;
       if (pinCountry && (!activeCountry || activeCountry.countryCode !== pinCountry.countryCode)) {
         pendingFocusRef.current = { coordinate: [pin.lng, pin.lat], zoom: 5 };
@@ -555,16 +581,13 @@ export default function TravelApp({ manageRequested = false }: Props) {
     } catch {
       showToast(t('notFoundTitle'));
     }
-  }, [activeCountry, countries, selectCountry, showToast, t]);
+  }, [activeCountry, countries, requestEditor, selectCountry, showToast, t]);
 
-  const closePanel = useCallback((updateAddress = true) => {
-    if (dirty && draft) {
-      setConfirmDiscard(true);
-      return;
-    }
+  const resetPanel = useCallback((updateAddress = true) => {
     setSelected(null);
     setDraft(null);
     setDirty(false);
+    editorStateRef.current = { draft: null, dirty: false };
     panelOverlayRef.current?.setPosition(undefined);
     if (updateAddress && window.location.pathname.startsWith('/p/')) history.pushState({}, '', managementActive ? '/manage' : '/');
     const map = mapRef.current;
@@ -572,7 +595,16 @@ export default function TravelApp({ manageRequested = false }: Props) {
       map.getView().animate({ center: openViewRef.current.center, resolution: openViewRef.current.resolution, duration: 360 });
       openViewRef.current = null;
     }
-  }, [dirty, draft, managementActive]);
+  }, [managementActive]);
+
+  const closePanel = useCallback((updateAddress = true) => {
+    if (dirty && draft) {
+      setPendingEditorTarget(null);
+      setConfirmDiscard(true);
+      return;
+    }
+    resetPanel(updateAddress);
+  }, [dirty, draft, resetPanel]);
 
   useEffect(() => {
     const pathId = window.location.pathname.match(/^\/p\/([^/]+)$/)?.[1];
@@ -663,8 +695,7 @@ export default function TravelApp({ manageRequested = false }: Props) {
   }, [activeCountry, locale, mapReady, openPin, pins, selected?.id, t]);
 
   useEffect(() => {
-    const active = draft || selected;
-    if (!active) {
+    if (!selected || draft) {
       panelOverlayRef.current?.setPosition(undefined);
       return;
     }
@@ -674,50 +705,17 @@ export default function TravelApp({ manageRequested = false }: Props) {
     overlay.setElement(panelHost);
 
     const placePanel = () => {
-      if (!overlay || !map) return;
-      if (!draft) {
-        overlay.setPositioning('center-center');
-        overlay.setOffset([0, 0]);
-        overlay.setPosition(map.getView().getCenter() || transform([active.lng, active.lat], 'EPSG:4326', activeProjectionRef.current));
-        return;
-      }
-      const coordinate = transform([active.lng, active.lat], 'EPSG:4326', activeProjectionRef.current);
-      const size = map.getSize();
-      const pixel = size ? map.getPixelFromCoordinate(coordinate) : null;
-      const rect = panelHost.getBoundingClientRect();
-      const margin = 24;
-      let positioning: 'bottom-center' | 'top-center' | 'center-left' | 'center-right' = 'bottom-center';
-      let offset: [number, number] = [0, -14];
-      if (pixel && size) {
-        if (pixel[1] < rect.height + margin) {
-          positioning = 'top-center';
-          offset = [0, 14];
-        } else if (pixel[1] > size[1] - rect.height - margin) {
-          positioning = 'bottom-center';
-        } else if (pixel[0] < rect.width / 2 + margin) {
-          positioning = 'center-left';
-          offset = [14, 0];
-        } else if (pixel[0] > size[0] - rect.width / 2 - margin) {
-          positioning = 'center-right';
-          offset = [-14, 0];
-        }
-      }
-      overlay.setPositioning(positioning);
-      overlay.setOffset(offset);
-      overlay.setPosition(coordinate);
+      overlay.setPositioning('center-center');
+      overlay.setOffset([0, 0]);
+      overlay.setPosition(map.getView().getCenter() || transform([selected.lng, selected.lat], 'EPSG:4326', activeProjectionRef.current));
     };
-
-    const frame = requestAnimationFrame(placePanel);
-    const observer = new ResizeObserver(() => requestAnimationFrame(placePanel));
-    observer.observe(panelHost);
-    const onCenter = () => { if (!draft) placePanel(); };
+    placePanel();
+    const onCenter = () => placePanel();
     map.getView().on('change:center', onCenter);
     return () => {
-      cancelAnimationFrame(frame);
-      observer.disconnect();
       map.getView().un('change:center', onCenter);
     };
-  }, [Boolean(draft), draft?.id, draft?.lat, draft?.lng, panelHost, selected?.id, selected?.lat, selected?.lng, activeCountry]);
+  }, [Boolean(draft), panelHost, selected?.id, selected?.lat, selected?.lng, activeCountry]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -743,7 +741,6 @@ export default function TravelApp({ manageRequested = false }: Props) {
   useEffect(() => {
     if (!draft || !ghostFeatureRef.current) return;
     ghostFeatureRef.current.getGeometry()?.setCoordinates(transform([draft.lng, draft.lat], 'EPSG:4326', activeProjectionRef.current));
-    panelOverlayRef.current?.setPosition(transform([draft.lng, draft.lat], 'EPSG:4326', activeProjectionRef.current));
   }, [draft?.lat, draft?.lng]);
 
   useEffect(() => {
@@ -813,36 +810,57 @@ export default function TravelApp({ manageRequested = false }: Props) {
   };
 
   const chooseCandidate = async (candidate: PlaceCandidate) => {
+    const managing = session.authenticated && managementActive && !isMobileEditor();
     const country = countries.find((item) => item.countryCode === candidate.countryCode);
-    if (country && (!activeCountry || activeCountry.countryCode !== country.countryCode)) {
-      pendingFocusRef.current = { coordinate: [candidate.lng, candidate.lat], zoom: 5 };
+    const countryChanged = Boolean(country && (!activeCountry || activeCountry.countryCode !== country.countryCode));
+    if (country && countryChanged) {
+      pendingFocusRef.current = { coordinate: [candidate.lng, candidate.lat], zoom: managing ? 0 : 5 };
       await selectCountry(country);
+    }
+    setSearchOpen(false);
+    if (managing) {
+      if (draft) {
+        const nextDraft = { ...draft, lng: candidate.lng, lat: candidate.lat, place_name: candidate.name, region_id: candidate.regionId, country_code: candidate.countryCode };
+        editorStateRef.current = { draft: nextDraft, dirty: true };
+        setDraft(nextDraft);
+        setDirty(true);
+      } else {
+        requestEditor({ ...freshDraft(candidate.lng, candidate.lat), place_name: candidate.name, region_id: candidate.regionId, country_code: candidate.countryCode }, null);
+      }
+      if (!countryChanged) {
+        const coordinate = transform([candidate.lng, candidate.lat], 'EPSG:4326', activeProjectionRef.current);
+        const view = mapRef.current?.getView();
+        if (view) view.animate({ center: coordinate, resolution: view.getResolution(), duration: 360 });
+      }
+      return;
     }
     const coordinate = transform([candidate.lng, candidate.lat], 'EPSG:4326', activeProjectionRef.current);
     const base = countryBaseResolutionRef.current || 1;
     mapRef.current?.getView().animate({ center: coordinate, resolution: base / 2 ** 5, duration: 560 });
-    setSearchOpen(false);
     if (draft) {
       setDraft({ ...draft, lng: candidate.lng, lat: candidate.lat, place_name: candidate.name, region_id: candidate.regionId, country_code: candidate.countryCode });
       setDirty(true);
-    } else if (session.authenticated && managementActive && !isMobileEditor()) {
-      setDraft({ ...freshDraft(candidate.lng, candidate.lat), place_name: candidate.name, region_id: candidate.regionId, country_code: candidate.countryCode });
     }
   };
 
   const chooseDraftCandidate = async (candidate: PlaceCandidate) => {
     if (!draft) return;
     const country = countries.find((item) => item.countryCode === candidate.countryCode);
-    if (country && (!activeCountry || activeCountry.countryCode !== country.countryCode)) {
-      pendingFocusRef.current = { coordinate: [candidate.lng, candidate.lat], zoom: 5 };
+    const countryChanged = Boolean(country && (!activeCountry || activeCountry.countryCode !== country.countryCode));
+    if (country && countryChanged) {
+      pendingFocusRef.current = { coordinate: [candidate.lng, candidate.lat], zoom: 0 };
       await selectCountry(country);
     }
-    const coordinate = transform([candidate.lng, candidate.lat], 'EPSG:4326', activeProjectionRef.current);
-    setDraft({ ...draft, lng: candidate.lng, lat: candidate.lat, place_name: candidate.name, region_id: candidate.regionId, country_code: candidate.countryCode });
+    const nextDraft = { ...draft, lng: candidate.lng, lat: candidate.lat, place_name: candidate.name, region_id: candidate.regionId, country_code: candidate.countryCode };
+    editorStateRef.current = { draft: nextDraft, dirty: true };
+    setDraft(nextDraft);
     setDraftCandidates([]);
     setDirty(true);
-    const base = countryBaseResolutionRef.current || 1;
-    mapRef.current?.getView().animate({ center: coordinate, resolution: Math.min(mapRef.current.getView().getResolution() || base, base / 2 ** 5), duration: 480 });
+    if (!countryChanged) {
+      const coordinate = transform([candidate.lng, candidate.lat], 'EPSG:4326', activeProjectionRef.current);
+      const view = mapRef.current?.getView();
+      if (view) view.animate({ center: coordinate, resolution: view.getResolution(), duration: 360 });
+    }
   };
 
   const switchLocale = () => {
@@ -981,8 +999,23 @@ export default function TravelApp({ manageRequested = false }: Props) {
   const editSelected = () => {
     if (!selected || !session.authenticated || !managementActive) return;
     if (isMobileEditor()) { showToast(t('mobileReadonly')); return; }
-    setDraft(pinToDraft(selected));
-    setDirty(false);
+    requestEditor(pinToDraft(selected), selected);
+  };
+
+  const discardChanges = () => {
+    const target = pendingEditorTarget;
+    setConfirmDiscard(false);
+    setPendingEditorTarget(null);
+    if (target) {
+      editorStateRef.current = { draft: target.draft, dirty: false };
+      setSelected(target.selected);
+      setDraft(target.draft);
+      setDirty(false);
+      setEditorMode('write');
+      history.replaceState({}, '', '/manage');
+      return;
+    }
+    resetPanel();
   };
 
   return (
@@ -1058,7 +1091,7 @@ export default function TravelApp({ manageRequested = false }: Props) {
       )}
 
       {createPortal((selected || draft) ? (
-          <article className="node-panel floating-paper" role="dialog" aria-modal="false" aria-label={draft ? t('editorLabel') : t('panelLabel')}>
+          <article className={`node-panel floating-paper${draft ? ' editor-drawer' : ''}`} role="dialog" aria-modal="false" aria-label={draft ? t('editorLabel') : t('panelLabel')}>
             <div className="panel-actions">
               {!draft && selected && session.authenticated && managementActive && <button className="icon-command" type="button" aria-label={t('edit')} title={t('edit')} onClick={editSelected}><Pencil /></button>}
               <button className="icon-command" type="button" aria-label={t('close')} title={t('close')} onClick={() => closePanel()}><X /></button>
@@ -1088,7 +1121,7 @@ export default function TravelApp({ manageRequested = false }: Props) {
                     {!!draft.media.length && <div className="media-editor-list">{draft.media.map((media) => <div className="media-editor-item" key={media.id}>{media.content_type.startsWith('video/') ? <video src={media.url} muted /> : <img src={media.url} alt="" />}<div className="media-editor-tools"><button type="button" onClick={() => updateDraft('cover_media_id', media.id)}>{draft.cover_media_id === media.id ? `✓ ${t('cover')}` : t('setCover')}</button><button type="button" aria-label={t('removeReference')} title={t('removeReference')} onClick={() => updateDraft('media', draft.media.filter((item) => item.id !== media.id).map((item, index) => ({ ...item, sort_order: index })))}><X size={13} /></button></div></div>)}</div>}
                   </div>
                   {!!draft.media.length && <label className="field"><span>{t('photoStyle')}</span><select value={draft.photo_style} onChange={(event) => updateDraft('photo_style', event.target.value as DraftPin['photo_style'])}><option value="photo-classic">{t('photoClassic')}</option><option value="photo-landscape">{t('photoLandscape')}</option><option value="photo-portrait">{t('photoPortrait')}</option></select></label>}
-                  <div className="editor-buttons">{draft.id && <button className="text-command danger" type="button" onClick={() => setConfirmDelete(true)}><Trash2 size={14} aria-hidden="true" /> {t('delete')}</button>}<button className="text-command" type="button" onClick={() => dirty ? setConfirmDiscard(true) : (setDraft(null), setSelected(draft.id ? selected : null))}>{t('cancel')}</button><button className="text-command primary" type="button" disabled={saving || !draft.title.trim() || !draft.region_id || !draft.country_code} onClick={() => void saveDraft()}><Check size={14} aria-hidden="true" /> {saving ? t('saving') : t('save')}</button></div>
+                  <div className="editor-buttons">{draft.id && <button className="text-command danger" type="button" onClick={() => setConfirmDelete(true)}><Trash2 size={14} aria-hidden="true" /> {t('delete')}</button>}<button className="text-command" type="button" onClick={() => closePanel()}>{t('cancel')}</button><button className="text-command primary" type="button" disabled={saving || !draft.title.trim() || !draft.region_id || !draft.country_code} onClick={() => void saveDraft()}><Check size={14} aria-hidden="true" /> {saving ? t('saving') : t('save')}</button></div>
                 </div>
               ) : selected ? (
                 <>
@@ -1100,7 +1133,7 @@ export default function TravelApp({ manageRequested = false }: Props) {
               ) : null}
             </div>
           </article>
-        ) : null, panelHost)}
+        ) : null, draft ? document.body : panelHost)}
 
       {loginOpen && !session.authenticated && (
         <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={t('loginLabel')}>
@@ -1119,7 +1152,7 @@ export default function TravelApp({ manageRequested = false }: Props) {
 
       {confirmDiscard && (
         <div className="modal-backdrop" role="alertdialog" aria-modal="true" aria-label={t('confirmLabel')}>
-          <section className="modal-paper floating-paper"><h2>{t('discardTitle')}</h2><p>{t('discardBody')}</p><div className="modal-actions"><button className="text-command" type="button" onClick={() => setConfirmDiscard(false)}>{t('cancel')}</button><button className="text-command danger" type="button" onClick={() => { setConfirmDiscard(false); setDirty(false); setDraft(null); if (!selected) panelOverlayRef.current?.setPosition(undefined); }}>{t('discardAction')}</button></div></section>
+          <section className="modal-paper floating-paper"><h2>{t('discardTitle')}</h2><p>{t('discardBody')}</p><div className="modal-actions"><button className="text-command" type="button" onClick={() => { setConfirmDiscard(false); setPendingEditorTarget(null); }}>{t('cancel')}</button><button className="text-command danger" type="button" onClick={discardChanges}>{t('discardAction')}</button></div></section>
         </div>
       )}
 
