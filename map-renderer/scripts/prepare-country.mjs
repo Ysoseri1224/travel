@@ -116,7 +116,7 @@ await writeFile(path.join(root, 'output', 'country-build-input.json'), `${JSON.s
   nameZh: String(properties.NAME_ZH || properties.NAME_EN || properties.NAME || iso3),
   bounds,
   id,
-  source: countryCode === 'CN' ? 'geoBoundaries gbOpen ADM0/ADM1 + GADM 4.1 ADM2; ADM1 omitted from raster to avoid source-boundary drift' : 'geoBoundaries gbOpen',
+  source: countryCode === 'CN' ? 'geoBoundaries gbOpen ADM0 + GADM 4.1 ADM2; ADM1 data retained for catalog metadata but omitted from raster to avoid source-boundary drift' : 'geoBoundaries gbOpen',
   features: Object.fromEntries(Object.entries(downloaded).map(([level, item]) => [level, item.features]))
 }, null, 2)}\n`);
 console.log(`country render prepared: ${countryCode} (${iso3})`);
