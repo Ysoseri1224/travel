@@ -63,6 +63,7 @@ function collectionBounds(collection) {
 }
 
 await mkdir(cache, { recursive: true });
+await mkdir(path.join(root, 'output'), { recursive: true });
 const naturalEarth = await fetchJson(naturalEarthUrl);
 const countryFeature = (naturalEarth.features || []).find((feature) => {
   const properties = feature.properties || {};
