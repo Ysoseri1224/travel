@@ -7,8 +7,9 @@
     "fetch:data": "node scripts/fetch-geoboundaries.mjs",
     "render:preview": "node scripts/render-preview.mjs",
     "render:props": "node scripts/render-paper-props.mjs && node scripts/verify-paper-props.mjs",
+    "render:pins": "node scripts/render-pins.mjs",
     "verify:props": "node scripts/verify-paper-props.mjs",
-    "render:all": "npm run render:preview && npm run render:props",
+    "render:all": "npm run render:preview && npm run render:props && npm run render:pins",
     "preview": "npm run fetch:data && npm run render:preview"
   },
   "dependencies": {

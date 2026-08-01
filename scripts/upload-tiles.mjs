@@ -1,4 +1,5 @@
 import { ListObjectsV2Command, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { createHash } from 'node:crypto';
 import { opendir, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,7 +9,10 @@ for (const name of required) {
   if (!process.env[name]) throw new Error(`${name} is required`);
 }
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'public', 'tiles');
+const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const root = process.env.TRAVEL_TILE_ROOT
+  ? path.resolve(projectRoot, process.env.TRAVEL_TILE_ROOT)
+  : path.join(projectRoot, 'public', 'tiles');
 const bucket = 'travel-tiles';
 const client = new S3Client({
   region: 'auto',
@@ -34,7 +38,7 @@ const remote = new Map();
 let continuationToken;
 do {
   const page = await client.send(new ListObjectsV2Command({ Bucket: bucket, ContinuationToken: continuationToken }));
-  for (const item of page.Contents || []) if (item.Key) remote.set(item.Key, item.Size || 0);
+  for (const item of page.Contents || []) if (item.Key) remote.set(item.Key, { size: item.Size || 0, etag: String(item.ETag || '').replaceAll('"', '') });
   continuationToken = page.IsTruncated ? page.NextContinuationToken : undefined;
 } while (continuationToken);
 
@@ -44,7 +48,9 @@ let skipped = 0;
 for (const file of files) {
   const key = path.relative(root, file).split(path.sep).join('/');
   const info = await stat(file);
-  if (remote.get(key) === info.size) skipped += 1;
+  const current = remote.get(key);
+  const hash = current?.size === info.size ? createHash('md5').update(await readFile(file)).digest('hex') : '';
+  if (current?.size === info.size && current.etag === hash) skipped += 1;
   else pending.push({ file, key, size: info.size });
 }
 
@@ -58,8 +64,13 @@ await Promise.all(Array.from({ length: concurrency }, async () => {
       Bucket: bucket,
       Key: item.key,
       Body: await readFile(item.file),
-      ContentType: item.key.endsWith('.webp') ? 'image/webp' : 'application/json',
-      CacheControl: item.key.endsWith('.webp') ? 'public, max-age=31536000, immutable' : 'public, max-age=300'
+      ContentType: item.key.endsWith('.webp') ? 'image/webp'
+        : item.key.endsWith('.mvt') ? 'application/vnd.mapbox-vector-tile'
+          : item.key.endsWith('.pmtiles') ? 'application/octet-stream'
+            : 'application/json',
+      CacheControl: item.key.endsWith('.webp') || item.key.endsWith('.mvt') || item.key.endsWith('.pmtiles')
+        ? 'public, max-age=31536000, immutable'
+        : 'public, max-age=300'
     }));
     uploadedBytes += item.size;
   }

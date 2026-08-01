@@ -25,6 +25,12 @@ npm run render:preview
 
 `MAP_RENDER_DEBUG=1` 会把纸张蒙版、陆地蒙版和各级墨线层写入 `.cache/debug/`，用于排查合成故障。
 
+## 16K 纯纸面超分
+
+`notebooks/paper-superres-colab.ipynb` 用于在 Colab GPU 中把调试输出的纯纸面 `.cache/debug/world-paper.png` 从 8192×4096 放大到 16384×8192。它不会处理已经包含行政墨线的最终成品：RealESRGAN_x2plus 只提供高频残差，宏观色调、氧化、折痕、污渍和透明撕边仍以原始纸面为准。
+
+notebook 会同时输出回缩 8K 后的 MAE、PSNR、SSIM、低频色差、alpha 误差和局部对比图。自动门槛通过只代表宏观一致性合格，不能替代 z9-z10 实际拖拽时的重复感与接缝检查。
+
 ## 纸张覆盖层素材
 
 生成便利贴与相纸透明母版：

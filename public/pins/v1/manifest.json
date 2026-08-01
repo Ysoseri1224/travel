@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "variants": [
+    {
+      "name": "coral",
+      "color": "#c85f3c",
+      "png": "pushpin-coral-v1.png",
+      "webp": "pushpin-coral-v1.webp",
+      "width": 256,
+      "height": 320,
+      "tip": [
+        142,
+        297
+      ]
+    },
+    {
+      "name": "verdigris",
+      "color": "#47756f",
+      "png": "pushpin-verdigris-v1.png",
+      "webp": "pushpin-verdigris-v1.webp",
+      "width": 256,
+      "height": 320,
+      "tip": [
+        142,
+        297
+      ]
+    },
+    {
+      "name": "ochre",
+      "color": "#d19a3b",
+      "png": "pushpin-ochre-v1.png",
+      "webp": "pushpin-ochre-v1.webp",
+      "width": 256,
+      "height": 320,
+      "tip": [
+        142,
+        297
+      ]
+    },
+    {
+      "name": "violet",
+      "color": "#805b88",
+      "png": "pushpin-violet-v1.png",
+      "webp": "pushpin-violet-v1.webp",
+      "width": 256,
+      "height": 320,
+      "tip": [
+        142,
+        297
+      ]
+    },
+    {
+      "name": "blue",
+      "color": "#55739a",
+      "png": "pushpin-blue-v1.png",
+      "webp": "pushpin-blue-v1.webp",
+      "width": 256,
+      "height": 320,
+      "tip": [
+        142,
+        297
+      ]
+    },
+    {
+      "name": "red",
+      "color": "#9a4d4b",
+      "png": "pushpin-red-v1.png",
+      "webp": "pushpin-red-v1.webp",
+      "width": 256,
+      "height": 320,
+      "tip": [
+        142,
+        297
+      ]
+    }
+  ]
+}

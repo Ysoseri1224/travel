@@ -20,7 +20,7 @@
     }
   ],
   "r2_buckets": [
-    { "binding": "TRAVEL_TILES", "bucket_name": "travel-tiles" },
+    { "binding": "TRAVEL_TILES", "bucket_name": "travel-tiles", "remote": true },
     { "binding": "MEDIA", "bucket_name": "ysoseri-media" },
     { "binding": "BACKUPS", "bucket_name": "travel-backups" }
   ],

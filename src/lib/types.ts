@@ -16,6 +16,7 @@ export interface Pin {
   place_name?: string | null;
   place_names?: Record<string, string> | null;
   region_id?: string | null;
+  country_code?: string | null;
   event_date?: string | null;
   color: string;
   content: string;
@@ -34,6 +35,7 @@ export interface PlaceCandidate {
   lng: number;
   regionId: string;
   regionName: string;
+  countryCode: string;
   pinCount: number;
   provider: 'Amap' | 'Google';
 }

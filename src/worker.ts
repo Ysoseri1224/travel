@@ -6,6 +6,7 @@ interface PinRow {
   place_name: string | null;
   place_names: string | null;
   region_id: string | null;
+  country_code: string | null;
   event_date: string | null;
   color: string;
   content: string;
@@ -38,6 +39,7 @@ interface PinPayload {
   place_name?: unknown;
   place_names?: unknown;
   region_id?: unknown;
+  country_code?: unknown;
   event_date?: unknown;
   color?: unknown;
   content?: unknown;
@@ -54,6 +56,7 @@ interface Candidate {
   lng: number;
   regionId: string;
   regionName: string;
+  countryCode: string;
   pinCount: number;
   provider: 'Amap' | 'Google';
 }
@@ -176,6 +179,7 @@ function validatePayload(payload: PinPayload): {
   placeName: string | null;
   placeNames: string | null;
   regionId: string | null;
+  countryCode: string | null;
   eventDate: string | null;
   color: string;
   content: string;
@@ -203,11 +207,21 @@ function validatePayload(payload: PinPayload): {
     placeName: asOptionalString(payload.place_name, 240),
     placeNames: payload.place_names && typeof payload.place_names === 'object' ? JSON.stringify(payload.place_names).slice(0, 2000) : null,
     regionId: asOptionalString(payload.region_id, 180),
+    countryCode: asOptionalString(payload.country_code, 2)?.toUpperCase() || null,
     eventDate, color, content,
     photoStyle: media.length && requestedStyle && PHOTO_STYLES.has(requestedStyle) ? requestedStyle : media.length ? 'photo-classic' : null,
     coverMediaId: media.some((item) => item.media_id === payload.cover_media_id) ? String(payload.cover_media_id) : media[0]?.media_id || null,
     media
   };
+}
+
+function requireLocation(value: ReturnType<typeof validatePayload>): void {
+  if (!value.placeName || !value.regionId || !value.countryCode || !/^[A-Z]{2}$/.test(value.countryCode)) throw new Error('INVALID_LOCATION');
+}
+
+async function requireKnownRegion(env: Env, regionId: string, countryCode: string): Promise<void> {
+  const region = await env.DB.prepare('SELECT region_id FROM regions WHERE region_id = ? AND country_code = ?').bind(regionId, countryCode).first();
+  if (!region) throw new Error('INVALID_REGION');
 }
 
 function mediaUrl(id: string): string { return `/media/${encodeURIComponent(id)}`; }
@@ -233,6 +247,15 @@ async function getPin(env: Env, id: string, includeDeleted = false): Promise<Rec
 async function listPins(env: Env): Promise<Array<Record<string, unknown>>> {
   const rows = await env.DB.prepare('SELECT * FROM pins WHERE deleted_at IS NULL ORDER BY COALESCE(event_date, created_at) DESC').all<PinRow>();
   return Promise.all(rows.results.map((row) => serializePin(env, row)));
+}
+
+async function pinStats(env: Env): Promise<{ cities: number; countries: number }> {
+  const row = await env.DB.prepare(`SELECT
+    count(DISTINCT region_id) AS cities,
+    count(DISTINCT country_code) AS countries
+    FROM pins WHERE deleted_at IS NULL AND region_id IS NOT NULL AND country_code IS NOT NULL`)
+    .first<{ cities: number; countries: number }>();
+  return { cities: Number(row?.cities || 0), countries: Number(row?.countries || 0) };
 }
 
 async function replaceMedia(env: Env, pinId: string, media: Array<{ media_id: string; sort_order: number; caption: string | null }>): Promise<void> {
@@ -275,7 +298,10 @@ async function handleAuth(request: Request, env: Env, path: string): Promise<Res
 
 async function handlePins(request: Request, env: Env, path: string): Promise<Response> {
   const id = path.match(/^\/api\/pins\/([^/]+)$/)?.[1];
-  if (request.method === 'GET' && !id) return json({ pins: await listPins(env) }, 200, { 'cache-control': 'public, max-age=20, stale-while-revalidate=120' });
+  if (request.method === 'GET' && !id) {
+    const [pins, stats] = await Promise.all([listPins(env), pinStats(env)]);
+    return json({ pins, stats }, 200, { 'cache-control': 'public, max-age=20, stale-while-revalidate=120' });
+  }
   if (request.method === 'GET' && id) {
     const pin = await getPin(env, decodeURIComponent(id));
     return pin ? json(pin, 200, { 'cache-control': 'public, max-age=30, stale-while-revalidate=120' }) : error('PIN_NOT_FOUND', 404);
@@ -293,11 +319,13 @@ async function handlePins(request: Request, env: Env, path: string): Promise<Res
 
   if (request.method === 'POST' && !id) {
     const value = validatePayload(await boundedJson<PinPayload>(request));
+    requireLocation(value);
+    await requireKnownRegion(env, value.regionId!, value.countryCode!);
     const pinId = `pin_${crypto.randomUUID().replaceAll('-', '')}`;
     await env.DB.prepare(`INSERT INTO pins
-      (id,title,lat,lng,place_name,place_names,region_id,event_date,color,content,photo_style,cover_media_id)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
-      .bind(pinId, value.title, value.lat, value.lng, value.placeName, value.placeNames, value.regionId, value.eventDate, value.color, value.content, value.photoStyle, value.coverMediaId).run();
+      (id,title,lat,lng,place_name,place_names,region_id,country_code,event_date,color,content,photo_style,cover_media_id)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .bind(pinId, value.title, value.lat, value.lng, value.placeName, value.placeNames, value.regionId, value.countryCode, value.eventDate, value.color, value.content, value.photoStyle, value.coverMediaId).run();
     await replaceMedia(env, pinId, value.media);
     return json(await getPin(env, pinId), 201);
   }
@@ -305,8 +333,10 @@ async function handlePins(request: Request, env: Env, path: string): Promise<Res
     const pinId = decodeURIComponent(id);
     if (!(await getPin(env, pinId))) return error('PIN_NOT_FOUND', 404);
     const value = validatePayload(await boundedJson<PinPayload>(request));
-    await env.DB.prepare(`UPDATE pins SET title=?,lat=?,lng=?,place_name=?,place_names=?,region_id=?,event_date=?,color=?,content=?,photo_style=?,cover_media_id=?,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND deleted_at IS NULL`)
-      .bind(value.title, value.lat, value.lng, value.placeName, value.placeNames, value.regionId, value.eventDate, value.color, value.content, value.photoStyle, value.coverMediaId, pinId).run();
+    requireLocation(value);
+    await requireKnownRegion(env, value.regionId!, value.countryCode!);
+    await env.DB.prepare(`UPDATE pins SET title=?,lat=?,lng=?,place_name=?,place_names=?,region_id=?,country_code=?,event_date=?,color=?,content=?,photo_style=?,cover_media_id=?,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND deleted_at IS NULL`)
+      .bind(value.title, value.lat, value.lng, value.placeName, value.placeNames, value.regionId, value.countryCode, value.eventDate, value.color, value.content, value.photoStyle, value.coverMediaId, pinId).run();
     await replaceMedia(env, pinId, value.media);
     return json(await getPin(env, pinId));
   }
@@ -376,6 +406,99 @@ function normalizeRegion(value: string): string {
   return value.normalize('NFKC').trim().toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-|-$/g, '').slice(0, 160) || 'unknown';
 }
 
+interface CatalogRegion {
+  id: string;
+  name: string;
+  countryCode: string;
+  sourceId: string;
+  bbox: [number, number, number, number];
+  centroid: [number, number];
+  geometry: { type: 'Polygon' | 'MultiPolygon'; coordinates: number[][][] | number[][][][] };
+}
+
+type CatalogRegionSummary = Omit<CatalogRegion, 'geometry'>;
+
+function pointInRing(lng: number, lat: number, ring: number[][]): boolean {
+  let inside = false;
+  for (let current = 0, previous = ring.length - 1; current < ring.length; previous = current++) {
+    const [currentLng, currentLat] = ring[current];
+    const [previousLng, previousLat] = ring[previous];
+    const intersects = (currentLat > lat) !== (previousLat > lat)
+      && lng < ((previousLng - currentLng) * (lat - currentLat)) / ((previousLat - currentLat) || Number.EPSILON) + currentLng;
+    if (intersects) inside = !inside;
+  }
+  return inside;
+}
+
+function pointInPolygon(lng: number, lat: number, polygon: number[][][]): boolean {
+  if (!polygon.length || !pointInRing(lng, lat, polygon[0])) return false;
+  return !polygon.slice(1).some((hole) => pointInRing(lng, lat, hole));
+}
+
+function regionContains(region: CatalogRegion, lng: number, lat: number): boolean {
+  const [west, south, east, north] = region.bbox;
+  if (lng < west || lng > east || lat < south || lat > north) return false;
+  if (region.geometry.type === 'Polygon') return pointInPolygon(lng, lat, region.geometry.coordinates as number[][][]);
+  return (region.geometry.coordinates as number[][][][]).some((polygon) => pointInPolygon(lng, lat, polygon));
+}
+
+async function readRegionCell(env: Env, countryCode: string, x: number, y: number): Promise<CatalogRegionSummary[]> {
+  const object = await env.TRAVEL_TILES.get(`v2/regions/${countryCode}/${x}/${y}.json.gz`);
+  if (!object) return [];
+  const stream = object.body.pipeThrough(new DecompressionStream('gzip'));
+  const payload = await new Response(stream).json() as { regions?: CatalogRegionSummary[] };
+  return payload.regions || [];
+}
+
+async function readCountryCatalog(env: Env, countryCode: string): Promise<CatalogRegion[]> {
+  const object = await env.TRAVEL_TILES.get(`v2/regions/${countryCode}/catalog.json.gz`);
+  if (!object) return [];
+  const stream = object.body.pipeThrough(new DecompressionStream('gzip'));
+  const payload = await new Response(stream).json() as { regions?: CatalogRegion[] };
+  return payload.regions || [];
+}
+
+async function catalogRegionAt(env: Env, countryCode: string, lng: number, lat: number): Promise<CatalogRegion | null> {
+  const cellX = Math.floor((lng + 180) / 4);
+  const cellY = Math.floor((lat + 90) / 4);
+  let summaries = await readRegionCell(env, countryCode, cellX, cellY);
+  let candidates = summaries.filter((region) => lng >= region.bbox[0] && lng <= region.bbox[2] && lat >= region.bbox[1] && lat <= region.bbox[3]);
+  if (!candidates.length) {
+    const adjacent = await Promise.all([
+      [-1, -1], [0, -1], [1, -1], [-1, 0], [1, 0], [-1, 1], [0, 1], [1, 1]
+    ].map(([dx, dy]) => readRegionCell(env, countryCode, cellX + dx, cellY + dy)));
+    summaries = adjacent.flat();
+    candidates = summaries.filter((region) => lng >= region.bbox[0] && lng <= region.bbox[2] && lat >= region.bbox[1] && lat <= region.bbox[3]);
+  }
+  if (!candidates.length) return null;
+  const candidateIds = new Set(candidates.map((region) => region.id));
+  const containing = (await readCountryCatalog(env, countryCode)).filter((region) => candidateIds.has(region.id) && regionContains(region, lng, lat));
+  return containing.sort((left, right) => {
+    const leftArea = (left.bbox[2] - left.bbox[0]) * (left.bbox[3] - left.bbox[1]);
+    const rightArea = (right.bbox[2] - right.bbox[0]) * (right.bbox[3] - right.bbox[1]);
+    return leftArea - rightArea;
+  })[0] || null;
+}
+
+async function resolveCandidateRegion(candidate: Candidate, lang: 'zh' | 'en', env: Env): Promise<Candidate | null> {
+  const region = await catalogRegionAt(env, candidate.countryCode, candidate.lng, candidate.lat);
+  if (!region) return null;
+  const nameZh = lang === 'zh' ? candidate.regionName || region.name : null;
+  const nameEn = lang === 'en' ? candidate.regionName || region.name : region.name;
+  await env.DB.prepare(`INSERT INTO regions
+    (region_id,country_code,name_en,name_zh,parent_name_en,parent_name_zh,centroid_lat,centroid_lng,source_id)
+    VALUES (?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(region_id) DO UPDATE SET
+      name_en=excluded.name_en,
+      name_zh=COALESCE(excluded.name_zh,regions.name_zh),
+      parent_name_en=COALESCE(excluded.parent_name_en,regions.parent_name_en),
+      parent_name_zh=COALESCE(excluded.parent_name_zh,regions.parent_name_zh),
+      updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')`)
+    .bind(region.id, candidate.countryCode, nameEn, nameZh, lang === 'en' ? candidate.regionName : null, lang === 'zh' ? candidate.regionName : null, region.centroid[1], region.centroid[0], region.sourceId)
+    .run();
+  return { ...candidate, regionId: region.id, regionName: candidate.regionName || region.name };
+}
+
 async function amapSearch(query: string, lang: string, env: Env): Promise<Candidate[]> {
   const url = new URL('https://restapi.amap.com/v3/place/text');
   url.search = new URLSearchParams({ key: env.AMAP_PLACE_API_KEY, keywords: query, offset: '5', page: '1', extensions: 'all', citylimit: 'false' }).toString();
@@ -390,8 +513,7 @@ async function amapSearch(query: string, lang: string, env: Env): Promise<Candid
     const city = String(poi.cityname || poi.pname || '');
     const district = String(poi.adname || '');
     const regionName = [city, district].filter(Boolean).join(' · ');
-    const adcode = String(poi.adcode || normalizeRegion(city || district));
-    return [{ id: `amap-${String(poi.id || `${lng},${lat}`)}`, name: String(poi.name || query), address: [regionName, String(poi.address || '')].filter(Boolean).join(' · '), lat, lng, regionId: `cn-${adcode}`, regionName, pinCount: 0, provider: 'Amap' }];
+    return [{ id: `amap-${String(poi.id || `${lng},${lat}`)}`, name: String(poi.name || query), address: [regionName, String(poi.address || '')].filter(Boolean).join(' · '), lat, lng, regionId: '', regionName, countryCode: 'CN', pinCount: 0, provider: 'Amap' }];
   });
 }
 
@@ -407,12 +529,15 @@ async function googleSearch(query: string, lang: string, env: Env): Promise<Cand
     const lat = geometry?.location?.lat;
     const lng = geometry?.location?.lng;
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) return [];
-    const components = (result.address_components || []) as Array<{ long_name?: string; types?: string[] }>;
+    const components = (result.address_components || []) as Array<{ long_name?: string; short_name?: string; types?: string[] }>;
     const locality = components.find((item) => item.types?.some((type) => ['locality', 'administrative_area_level_2'].includes(type)))?.long_name || '';
-    const country = components.find((item) => item.types?.includes('country'))?.long_name || '';
+    const countryComponent = components.find((item) => item.types?.includes('country'));
+    const country = countryComponent?.long_name || '';
+    const countryCode = String(countryComponent?.short_name || '').toUpperCase();
+    if (!/^[A-Z]{2}$/.test(countryCode)) return [];
     const regionName = [locality, country].filter(Boolean).join(' · ');
     const name = components.find((item) => item.types?.some((type) => ['point_of_interest', 'establishment'].includes(type)))?.long_name || String(result.formatted_address || query).split(',')[0];
-    return [{ id: `google-${String(result.place_id || `${lng},${lat}`)}`, name, address: String(result.formatted_address || regionName), lat: Number(lat), lng: Number(lng), regionId: `global-${normalizeRegion(locality || country)}`, regionName, pinCount: 0, provider: 'Google' }];
+    return [{ id: `google-${String(result.place_id || `${lng},${lat}`)}`, name, address: String(result.formatted_address || regionName), lat: Number(lat), lng: Number(lng), regionId: '', regionName, countryCode, pinCount: 0, provider: 'Google' }];
   });
 }
 
@@ -427,7 +552,7 @@ async function searchPlaces(request: Request, env: Env): Promise<Response> {
     ON CONFLICT(client_hash,window_start) DO UPDATE SET request_count=request_count+1 RETURNING request_count`).bind(ipHash, minute).first<{ request_count: number }>();
   if ((limit?.request_count || 0) > 30) return error('RATE_LIMITED', 429);
 
-  const cacheKey = await digest(`${lang}:${query.toLowerCase()}`);
+  const cacheKey = await digest(`v2:${lang}:${query.toLowerCase()}`);
   const cached = await env.DB.prepare('SELECT payload FROM search_cache WHERE cache_key = ? AND expires_at > ?').bind(cacheKey, new Date().toISOString()).first<{ payload: string }>();
   if (cached) return json(JSON.parse(cached.payload), 200, { 'cache-control': 'public, max-age=300' });
 
@@ -437,7 +562,8 @@ async function searchPlaces(request: Request, env: Env): Promise<Response> {
   if (!candidates.length) {
     try { candidates = likelyChina ? await googleSearch(query, lang, env) : await amapSearch(query, lang, env); } catch { candidates = []; }
   }
-  const unique = [...new Map(candidates.map((item) => [`${normalizeRegion(item.name)}:${item.lat.toFixed(4)}:${item.lng.toFixed(4)}`, item])).values()].slice(0, 5);
+  const resolved = (await Promise.all(candidates.map((candidate) => resolveCandidateRegion(candidate, lang, env)))).filter((candidate): candidate is Candidate => Boolean(candidate));
+  const unique = [...new Map(resolved.map((item) => [`${normalizeRegion(item.name)}:${item.lat.toFixed(4)}:${item.lng.toFixed(4)}`, item])).values()].slice(0, 5);
   if (unique.length) {
     const counts = await env.DB.batch(unique.map((item) => env.DB.prepare('SELECT count(*) AS count FROM pins WHERE region_id = ? AND deleted_at IS NULL').bind(item.regionId)));
     unique.forEach((item, index) => { item.pinCount = Number((counts[index].results[0] as { count?: number } | undefined)?.count || 0); });
@@ -502,16 +628,34 @@ async function shellResponse(request: Request, env: Env, mode: 'root' | 'manage'
 
 async function serveTile(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const url = new URL(request.url);
-  const match = url.pathname.match(/^\/tiles\/(v[\w.-]+)\/(\d+)\/(\d+)\/(\d+)\.webp$/);
+  const match = url.pathname.match(/^\/tiles\/(v[\w.-]+)\/([\w./-]+)$/);
   if (!match) return new Response('Not found', { status: 404 });
+  if (match[2].includes('..')) return new Response('Not found', { status: 404 });
   const cache = caches.default;
   const cacheKey = new Request(request.url, { method: 'GET' });
   const cached = await cache.match(cacheKey);
   if (cached) return cached;
-  const object = await env.TRAVEL_TILES.get(`${match[1]}/${match[2]}/${match[3]}/${match[4]}.webp`);
+  const rangeHeader = request.headers.get('range');
+  const object = await env.TRAVEL_TILES.get(`${match[1]}/${match[2]}`, rangeHeader ? { range: request.headers } : undefined);
   if (!object) return env.ASSETS.fetch(request);
-  const headers = responseHeaders({ 'content-type': 'image/webp', 'cache-control': 'public, max-age=31536000, immutable', etag: object.httpEtag });
-  const response = new Response(object.body, { headers });
+  const contentType = match[2].endsWith('.webp') ? 'image/webp'
+    : match[2].endsWith('.mvt') ? 'application/vnd.mapbox-vector-tile'
+      : match[2].endsWith('.pmtiles') ? 'application/octet-stream'
+        : 'application/json';
+  const headers = responseHeaders({ 'content-type': contentType, 'cache-control': 'public, max-age=31536000, immutable', etag: object.httpEtag, 'accept-ranges': 'bytes' });
+  let status = 200;
+  if (rangeHeader) {
+    const explicit = rangeHeader.match(/^bytes=(\d+)-(\d*)$/);
+    const suffix = rangeHeader.match(/^bytes=-(\d+)$/);
+    const offset = explicit ? Number(explicit[1]) : suffix ? Math.max(0, object.size - Number(suffix[1])) : 0;
+    const requestedEnd = explicit?.[2] ? Number(explicit[2]) : object.size - 1;
+    const end = Math.min(object.size - 1, requestedEnd);
+    const length = Math.max(0, end - offset + 1);
+    headers.set('content-range', `bytes ${offset}-${offset + length - 1}/${object.size}`);
+    headers.set('content-length', String(length));
+    status = 206;
+  }
+  const response = new Response(object.body, { status, headers });
   ctx.waitUntil(cache.put(cacheKey, response.clone()));
   return response;
 }

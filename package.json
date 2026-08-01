@@ -7,6 +7,9 @@
     "dev": "astro dev",
     "prepare:assets": "node scripts/prepare-assets.mjs",
     "render:tiles": "node scripts/render-tiles.mjs",
+    "render:high-zoom": "node scripts/render-high-zoom.mjs",
+    "build:regions": "node scripts/build-region-catalog.mjs",
+    "build:admin": "node --max-old-space-size=8192 scripts/build-admin-pmtiles.mjs",
     "upload:tiles": "node scripts/upload-tiles.mjs",
     "check:i18n": "node scripts/check-i18n.mjs",
     "build": "npm run check:i18n && npm run prepare:assets && astro build",
@@ -27,6 +30,7 @@
     "lucide-react": "^0.468.0",
     "marked": "^16.1.2",
     "ol": "^10.6.1",
+    "pmtiles": "^4.4.1",
     "react": "^19.1.1",
     "react-dom": "^19.1.1"
   },
@@ -39,9 +43,12 @@
     "@types/node": "^26.1.2",
     "@types/react": "^19.1.10",
     "@types/react-dom": "^19.1.7",
+    "geojson-vt": "^4.0.3",
     "sharp": "^0.34.3",
+    "sql.js": "^1.14.1",
     "typescript": "^5.9.2",
     "vitest": "^3.2.4",
+    "vt-pbf": "^3.1.3",
     "wrangler": "^4.118.0"
   }
 }
