@@ -7,7 +7,12 @@ import sharp from 'sharp';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(scriptDir, '..');
-const config = JSON.parse(await readFile(path.join(rootDir, 'config', 'render.config.json'), 'utf8'));
+const configPath = process.env.RENDER_CONFIG
+  ? path.resolve(rootDir, process.env.RENDER_CONFIG)
+  : process.env.COUNTRY_CODE
+    ? path.join(rootDir, 'config', 'country-render.json')
+  : path.join(rootDir, 'config', 'render.config.json');
+const config = JSON.parse(await readFile(configPath, 'utf8'));
 const cacheDir = path.join(rootDir, '.cache', 'geoboundaries');
 const outputDir = path.join(rootDir, 'output');
 await mkdir(outputDir, { recursive: true });

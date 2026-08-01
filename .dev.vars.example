@@ -2,3 +2,5 @@ TRAVEL_PASSWORD=replace-me
 TRAVEL_SESSION_SECRET=replace-with-random-secret
 AMAP_PLACE_API_KEY=replace-me
 GOOGLE_PLACES_API_KEY=replace-me
+GITHUB_TOKEN=replace-me
+COUNTRY_BUILD_CALLBACK_SECRET=replace-with-random-secret

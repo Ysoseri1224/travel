@@ -9,26 +9,21 @@ import Overlay from 'ol/Overlay';
 import Feature from 'ol/Feature';
 import Point from 'ol/geom/Point';
 import TileLayer from 'ol/layer/Tile';
+import ImageLayer from 'ol/layer/Image';
 import VectorLayer from 'ol/layer/Vector';
-import VectorTileLayer from 'ol/layer/VectorTile';
 import XYZ from 'ol/source/XYZ';
+import ImageStatic from 'ol/source/ImageStatic';
 import VectorSource from 'ol/source/Vector';
-import VectorTileSource from 'ol/source/VectorTile';
 import TileGrid from 'ol/tilegrid/TileGrid';
 import Modify from 'ol/interaction/Modify';
 import { Circle as CircleStyle, Fill, Stroke, Style } from 'ol/style';
-import MVT from 'ol/format/MVT';
-import VectorTile from 'ol/VectorTile';
-import RenderFeature from 'ol/render/Feature';
+import GeoJSON from 'ol/format/GeoJSON';
 import Projection from 'ol/proj/Projection';
 import { addCoordinateTransforms, addProjection, transform } from 'ol/proj';
 import { getDistance } from 'ol/sphere';
-import { boundingExtent, intersects, type Extent } from 'ol/extent';
-import type { TileSourceEvent } from 'ol/source/Tile';
-import { PMTiles } from 'pmtiles';
 import {
   Check, Home, Languages, LogIn, LogOut,
-  MapPin, Pencil, Search, Trash2, Upload, X
+  Map as MapIcon, MapPin, Pencil, Search, Trash2, Upload, X
 } from 'lucide-react';
 import { detectLocale, translate, type Locale, type TranslationKey } from '../lib/i18n';
 import type { MediaAsset, Pin, PlaceCandidate, SessionState } from '../lib/types';
@@ -69,20 +64,7 @@ const PIN_ASSETS: Record<string, string> = {
   '#9a4d4b': '/pins/v1/pushpin-red-v1.webp'
 };
 const PHOTO_STYLES = ['photo-classic', 'photo-landscape', 'photo-portrait'] as const;
-const ADMIN_STYLES = {
-  ADM0: [
-    new Style({ stroke: new Stroke({ color: 'rgba(50,35,25,.22)', width: 3.1 }) }),
-    new Style({ stroke: new Stroke({ color: 'rgba(50,35,25,.78)', width: 1.15 }) })
-  ],
-  ADM1: [
-    new Style({ stroke: new Stroke({ color: 'rgba(82,61,43,.16)', width: 2.1 }) }),
-    new Style({ stroke: new Stroke({ color: 'rgba(82,61,43,.55)', width: .78 }) })
-  ],
-  ADM2: [
-    new Style({ stroke: new Stroke({ color: 'rgba(103,78,55,.14)', width: 1.55 }) }),
-    new Style({ stroke: new Stroke({ color: 'rgba(103,78,55,.43)', width: .58 }) })
-  ]
-};
+const COUNTRY_EXTENT: [number, number, number, number] = [0, -3072, 4096, 0];
 
 interface DraftPin {
   id?: string;
@@ -101,6 +83,26 @@ interface DraftPin {
 }
 
 interface Props { manageRequested?: boolean; }
+
+interface CountryCatalogItem {
+  countryCode: string;
+  iso3: string;
+  name: { en: string; zh: string };
+  status: 'ready';
+  packageVersion: string;
+  manifestUrl: string;
+  bounds: [number, number, number, number];
+}
+
+interface CountryPackage {
+  countryCode: string;
+  packageVersion: string;
+  bounds: [number, number, number, number];
+  baseZoom: number;
+  maxZoom: number;
+  keepsakesFromZoom: number;
+  raster: { key: string; width: number; height: number };
+}
 
 async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(path, { credentials: 'same-origin', ...init });
@@ -138,6 +140,43 @@ function isMobileEditor(): boolean {
   return window.matchMedia('(max-width: 820px), (pointer: coarse)').matches;
 }
 
+function createCountryProjection(country: CountryCatalogItem, manifest: CountryPackage): Projection {
+  const [west, south, east, north] = manifest.bounds;
+  const raw = geoNaturalEarth1().scale(1).translate([0, 0]);
+  const samples: Array<[number, number]> = [];
+  for (let step = 0; step <= 64; step += 1) {
+    const progress = step / 64;
+    const lng = west + (east - west) * progress;
+    const lat = south + (north - south) * progress;
+    samples.push(raw([lng, south])!, raw([lng, north])!, raw([west, lat])!, raw([east, lat])!);
+  }
+  const xs = samples.map(([x]) => x);
+  const ys = samples.map(([, y]) => y);
+  const [minX, maxX, minY, maxY] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+  const margin = 139.2;
+  const scale = Math.min((4096 - margin * 2) / (maxX - minX), (3072 - margin * 2) / (maxY - minY));
+  const projection = geoNaturalEarth1().scale(scale).translate([
+    margin + (4096 - margin * 2 - (maxX - minX) * scale) / 2 - minX * scale,
+    margin + (3072 - margin * 2 - (maxY - minY) * scale) / 2 - minY * scale
+  ]).precision(.18);
+  const olProjection = new Projection({
+    code: `YSOSERI:COUNTRY-${country.countryCode}-${manifest.packageVersion}`,
+    units: 'pixels',
+    extent: COUNTRY_EXTENT
+  });
+  addProjection(olProjection);
+  addCoordinateTransforms(
+    'EPSG:4326',
+    olProjection,
+    (coordinate) => {
+      const projected = projection([coordinate[0], coordinate[1]]);
+      return projected ? [projected[0], -projected[1]] : [2048, -1536];
+    },
+    (coordinate) => projection.invert?.([coordinate[0], -coordinate[1]]) || [0, 0]
+  );
+  return olProjection;
+}
+
 export default function TravelApp({ manageRequested = false }: Props) {
   const mapTargetRef = useRef<HTMLDivElement>(null);
   const [panelHost] = useState(() => {
@@ -157,6 +196,9 @@ export default function TravelApp({ manageRequested = false }: Props) {
   const permissionRef = useRef({ authenticated: false, managementActive: false });
   const scaleRef = useRef<HTMLDivElement>(null);
   const scaleFrameRef = useRef<number | null>(null);
+  const activeProjectionRef = useRef<Projection>(MAP_PROJECTION);
+  const countryBaseResolutionRef = useRef<number | null>(null);
+  const pendingFocusRef = useRef<[number, number] | null>(null);
 
   const [locale, setLocale] = useState<Locale>('zh');
   const [pins, setPins] = useState<Pin[]>(() => window.__TRAVEL_INITIAL__?.pins || []);
@@ -187,6 +229,12 @@ export default function TravelApp({ manageRequested = false }: Props) {
   const [lightbox, setLightbox] = useState<MediaAsset | null>(null);
   const [toast, setToast] = useState('');
   const [mapReady, setMapReady] = useState(false);
+  const [countries, setCountries] = useState<CountryCatalogItem[]>([]);
+  const [activeCountry, setActiveCountry] = useState<CountryCatalogItem | null>(null);
+  const [countryPackage, setCountryPackage] = useState<CountryPackage | null>(null);
+  const [countryMenuOpen, setCountryMenuOpen] = useState(false);
+  const [countryChooserOpen, setCountryChooserOpen] = useState(false);
+  const [countryLoading, setCountryLoading] = useState(false);
 
   permissionRef.current = { authenticated: session.authenticated, managementActive };
 
@@ -229,6 +277,15 @@ export default function TravelApp({ manageRequested = false }: Props) {
     }
   }, [manageRequested, showToast, t]);
 
+  const loadCountries = useCallback(async () => {
+    try {
+      const result = await api<{ countries: CountryCatalogItem[] }>('/api/countries');
+      setCountries(result.countries);
+    } catch {
+      setCountries([]);
+    }
+  }, []);
+
   useEffect(() => {
     const onPop = () => setManagementActive(window.location.pathname === '/manage');
     window.addEventListener('popstate', onPop);
@@ -241,110 +298,40 @@ export default function TravelApp({ manageRequested = false }: Props) {
     document.documentElement.lang = next === 'zh' ? 'zh-CN' : 'en';
     void loadPins();
     void loadSession();
-  }, [loadPins, loadSession]);
+    void loadCountries();
+  }, [loadCountries, loadPins, loadSession]);
+
+  const selectCountry = useCallback(async (country: CountryCatalogItem) => {
+    setCountryLoading(true);
+    try {
+      const response = await fetch(country.manifestUrl, { credentials: 'same-origin', cache: 'no-store' });
+      if (!response.ok) throw new Error('COUNTRY_MANIFEST');
+      const manifest = await response.json() as CountryPackage;
+      setCountryPackage(manifest);
+      setActiveCountry(country);
+      setCountryChooserOpen(false);
+      setCountryMenuOpen(false);
+    } catch {
+      showToast(t('countryUnavailable'));
+    } finally {
+      setCountryLoading(false);
+    }
+  }, [showToast, t]);
+
+  const returnToWorld = useCallback(() => {
+    setActiveCountry(null);
+    setCountryPackage(null);
+    setCountryChooserOpen(false);
+    setCountryMenuOpen(false);
+    setSelected(null);
+    setDraft(null);
+    setDirty(false);
+    panelOverlayRef.current?.setPosition(undefined);
+    history.replaceState({}, '', managementActive ? '/manage' : '/');
+  }, [managementActive]);
 
   useEffect(() => {
     if (!mapTargetRef.current || mapRef.current) return;
-    const tileGrid = new TileGrid({
-      extent: MAP_EXTENT,
-      origin: [0, 0],
-      resolutions: [16, 8, 4, 2, 1, .5, .25, .125, .0625, .03125, .015625],
-      tileSize: 256
-    });
-    const baseTileGrid = new TileGrid({
-      extent: MAP_EXTENT,
-      origin: [0, 0],
-      resolutions: [16, 8, 4, 2, 1],
-      tileSize: 256
-    });
-    const paperTileGrid = new TileGrid({
-      extent: MAP_EXTENT,
-      origin: [0, 0],
-      minZoom: 5,
-      resolutions: [16, 8, 4, 2, 1, .5],
-      tileSize: 256
-    });
-    const baseSource = new XYZ({
-      projection: MAP_PROJECTION,
-      tileGrid: baseTileGrid,
-      url: '/tiles/v1/{z}/{x}/{y}.webp',
-      wrapX: false,
-      transition: 0
-    });
-    const baseLayer = new TileLayer({
-      extent: MAP_EXTENT,
-      preload: 2,
-      source: baseSource
-    });
-    const paperSource = new XYZ({
-      projection: MAP_PROJECTION,
-      tileGrid: paperTileGrid,
-      tileUrlFunction: (tileCoordinate) => {
-        if (tileCoordinate[0] !== 5) return undefined;
-        return `/tiles/v2/paper/${tileCoordinate[0]}/${tileCoordinate[1]}/${tileCoordinate[2]}.webp`;
-      },
-      gutter: 1,
-      wrapX: false,
-      transition: 0
-    });
-    const paperLayer = new TileLayer({ extent: MAP_EXTENT, minZoom: 4.15, preload: 1, opacity: .01, visible: false, source: paperSource });
-    const detailLayer = (id: string, period: number) => new TileLayer({
-      extent: MAP_EXTENT,
-      minZoom: 5.4,
-      opacity: 0,
-      visible: false,
-      source: new XYZ({
-        projection: MAP_PROJECTION,
-        tileGrid,
-        minZoom: 6,
-        maxZoom: 10,
-        wrapX: false,
-        transition: 140,
-        tileUrlFunction: (tileCoordinate) => {
-          if (!tileCoordinate || tileCoordinate[0] < 6) return undefined;
-          const x = ((tileCoordinate[1] % period) + period) % period;
-          const y = ((tileCoordinate[2] % period) + period) % period;
-          return `/tiles/v2/detail/${id}/${x}/${y}.webp`;
-        }
-      })
-    });
-    const fiberLayer = detailLayer('fiber', 4);
-    const pulpLayer = detailLayer('pulp', 5);
-    const grainLayer = detailLayer('grain', 7);
-    const mvtFormat = new MVT();
-    const adminSource = (archiveName: string, minZoom: number) => {
-      const archive = new PMTiles(`/tiles/v2/admin/${archiveName}.pmtiles`);
-      return new VectorTileSource({
-        projection: MAP_PROJECTION,
-        tileGrid,
-        minZoom,
-        maxZoom: 10,
-        wrapX: false,
-        transition: 100,
-        tileUrlFunction: (coordinate) => coordinate ? coordinate.join('/') : undefined,
-        tileLoadFunction: (tile, url) => {
-          const [zoom, x, y] = url.split('/').map(Number);
-          const vectorTile = tile as VectorTile<RenderFeature>;
-          vectorTile.setLoader(async (extent: Extent, _resolution: number, projection: Projection) => {
-            try {
-              const result = await archive.getZxy(zoom + 1, x, y);
-              const features = result
-                ? mvtFormat.readFeatures(result.data, { extent, featureProjection: projection })
-                : [];
-              vectorTile.setFeatures(features);
-              return features;
-            } catch {
-              vectorTile.setFeatures([]);
-              return [];
-            }
-          });
-        }
-      });
-    };
-    const globalAdminSource = adminSource('global', 5);
-    const adminStyle = (feature: { get: (key: string) => unknown }) => ADMIN_STYLES[String(feature.get('level')) as keyof typeof ADMIN_STYLES] || ADMIN_STYLES.ADM2;
-    const globalAdminLayer = new VectorTileLayer({ source: globalAdminSource, style: adminStyle, minZoom: 4.15, declutter: false, visible: false });
-    globalAdminLayer.setZIndex(20);
     const ghostLayer = new VectorLayer({
       source: ghostSourceRef.current,
       style: new Style({
@@ -352,100 +339,106 @@ export default function TravelApp({ manageRequested = false }: Props) {
       }),
       zIndex: 40
     });
-    const view = new View({
-      projection: MAP_PROJECTION,
-      center: [4096, -2048],
-      zoom: 1,
-      minZoom: 0,
-      maxZoom: 10,
-      extent: [-2600, -6700, 10792, 2600],
+    const isWorld = !activeCountry || !countryPackage;
+    let projection = MAP_PROJECTION;
+    let view: View;
+    const layers: Array<TileLayer<XYZ> | ImageLayer<ImageStatic> | VectorLayer<VectorSource>> = [];
+    if (isWorld) {
+      const tileGrid = new TileGrid({ extent: MAP_EXTENT, origin: [0, 0], resolutions: [16, 8, 4, 2, 1], tileSize: 256 });
+      layers.push(new TileLayer({
+        extent: MAP_EXTENT,
+        preload: 2,
+        source: new XYZ({ projection: MAP_PROJECTION, tileGrid, url: '/tiles/v1/{z}/{x}/{y}.webp', wrapX: false, transition: 0 })
+      }));
+      const readyCodes = new Set(countries.map((country) => country.countryCode));
+      const outlineSource = new VectorSource({
+        url: '/maps/country-index-v1.geojson',
+        format: new GeoJSON({ dataProjection: 'EPSG:4326', featureProjection: MAP_PROJECTION })
+      });
+      let hoveredCountry = '';
+      const outlineLayer = new VectorLayer({
+        source: outlineSource,
+        style: (feature) => {
+          const code = String(feature.get('countryCode') || '');
+          if (!readyCodes.has(code)) return undefined;
+          return new Style({
+            fill: new Fill({ color: code === hoveredCountry ? 'rgba(200,95,60,.12)' : 'rgba(0,0,0,0)' }),
+            stroke: new Stroke({ color: code === hoveredCountry ? 'rgba(74,49,31,.92)' : 'rgba(74,49,31,0)', width: code === hoveredCountry ? 2.2 : 0 })
+          });
+        },
+        zIndex: 18
+      });
+      layers.push(outlineLayer);
+      view = new View({ projection: MAP_PROJECTION, center: [4096, -2048], resolution: 4, extent: MAP_EXTENT, constrainResolution: false });
+      const map = new Map({ target: mapTargetRef.current, layers: [...layers, ghostLayer], view, controls: [], interactions: [] });
+      mapRef.current = map;
+      activeProjectionRef.current = MAP_PROJECTION;
+      countryBaseResolutionRef.current = null;
+      const fitWorld = () => {
+        map.updateSize();
+        const size = map.getSize();
+        if (size?.[0] && size[1]) view.setResolution(Math.min((8000.6 - 191.4) / size[0], (3904.6 - 191.4) / size[1]));
+        view.setCenter([4096, -2048]);
+      };
+      requestAnimationFrame(fitWorld);
+      const showChooser = (event: Event) => { event.preventDefault(); setCountryChooserOpen(true); setCountryMenuOpen(false); };
+      const viewport = map.getViewport();
+      viewport.addEventListener('wheel', showChooser, { passive: false });
+      viewport.addEventListener('dblclick', showChooser);
+      map.on('pointermove', (event) => {
+        const feature = map.forEachFeatureAtPixel(event.pixel, (candidate) => candidate, { layerFilter: (layer) => layer === outlineLayer });
+        const next = feature && readyCodes.has(String(feature.get('countryCode') || '')) ? String(feature.get('countryCode')) : '';
+        if (next !== hoveredCountry) { hoveredCountry = next; outlineSource.changed(); }
+        viewport.style.cursor = next ? 'pointer' : 'default';
+      });
+      map.on('singleclick', (event) => {
+        const feature = map.forEachFeatureAtPixel(event.pixel, (candidate) => candidate, { layerFilter: (layer) => layer === outlineLayer });
+        const code = String(feature?.get('countryCode') || '');
+        const country = countries.find((item) => item.countryCode === code);
+        if (country) void selectCountry(country);
+      });
+      setMapReady(true);
+      return () => {
+        viewport.removeEventListener('wheel', showChooser);
+        viewport.removeEventListener('dblclick', showChooser);
+        map.setTarget(undefined);
+        mapRef.current = null;
+        setMapReady(false);
+      };
+    }
+
+    projection = createCountryProjection(activeCountry, countryPackage);
+    activeProjectionRef.current = projection;
+    const width = mapTargetRef.current.clientWidth || window.innerWidth;
+    const height = mapTargetRef.current.clientHeight || window.innerHeight;
+    const baseResolution = Math.max(4096 / width, 3072 / height);
+    countryBaseResolutionRef.current = baseResolution;
+    layers.push(new ImageLayer({
+      extent: COUNTRY_EXTENT,
+      source: new ImageStatic({
+        projection,
+        imageExtent: COUNTRY_EXTENT,
+        url: `/tiles/${countryPackage.raster.key}`,
+        interpolate: true
+      })
+    }));
+    view = new View({
+      projection,
+      center: [2048, -1536],
+      resolution: baseResolution,
+      minResolution: baseResolution / 2 ** countryPackage.maxZoom,
+      maxResolution: baseResolution,
+      extent: COUNTRY_EXTENT,
       smoothExtentConstraint: true,
       constrainResolution: false
     });
-    const map = new Map({ target: mapTargetRef.current, layers: [baseLayer, paperLayer, fiberLayer, pulpLayer, grainLayer, globalAdminLayer, ghostLayer], view, controls: [] });
+    const map = new Map({ target: mapTargetRef.current, layers: [...layers, ghostLayer], view, controls: [] });
     mapRef.current = map;
-    const setWorldCover = () => {
-      map.updateSize();
-      const size = map.getSize();
-      if (!size?.[0] || !size[1]) return;
-      view.setCenter([4096, -2048]);
-      view.setResolution(Math.min((8000.6 - 191.4) / size[0], (3904.6 - 191.4) / size[1]));
-    };
-    requestAnimationFrame(setWorldCover);
     const updateZoomClass = () => {
-      const zoom = view.getZoom() || 0;
-      mapTargetRef.current?.classList.toggle('zoom-city', zoom >= 6.2);
-      mapTargetRef.current?.classList.toggle('zoom-local', zoom >= 8.7);
-    };
-    let paperReady = false;
-    let vectorReady = false;
-    let syncCountryLayers = () => {};
-    const loadedPaperTiles = new Set<string>();
-    const loadedVectorTiles = new Set<string>();
-    const tileKey = (coordinate: number[]) => `${coordinate[0]}/${coordinate[1]}/${coordinate[2]}`;
-    const currentCoverageReady = (grid: TileGrid, loadedTiles: Set<string>, zoom?: number) => {
-      if (view.getAnimating()) return false;
-      const size = map.getSize();
-      if (!size?.[0] || !size[1]) return false;
-      const visible = view.calculateExtent(size);
-      if (!intersects(visible, MAP_EXTENT)) return false;
-      const extent: Extent = [
-        Math.max(visible[0], MAP_EXTENT[0]),
-        Math.max(visible[1], MAP_EXTENT[1]),
-        Math.min(visible[2], MAP_EXTENT[2]),
-        Math.min(visible[3], MAP_EXTENT[3])
-      ];
-      const targetZoom = zoom ?? grid.getZForResolution(view.getResolution() || grid.getResolution(grid.getMinZoom()));
-      const range = grid.getTileRangeForExtentAndZ(extent, targetZoom);
-      for (let x = range.minX; x <= range.maxX; x += 1) {
-        for (let y = range.minY; y <= range.maxY; y += 1) {
-          if (!loadedTiles.has(`${targetZoom}/${x}/${y}`)) return false;
-        }
-      }
-      return true;
-    };
-    const smoothstep = (from: number, to: number, value: number) => {
-      const normalized = Math.max(0, Math.min(1, (value - from) / (to - from)));
-      return normalized * normalized * (3 - 2 * normalized);
-    };
-    const updateLayerOpacity = () => {
-      const zoom = view.getZoom() || 0;
-      const transition = paperReady && vectorReady ? smoothstep(4.3, 4.7, zoom) : 0;
-      baseLayer.setOpacity(1 - transition);
-      paperLayer.setVisible(zoom >= 4.15);
-      paperLayer.setOpacity(paperReady ? transition : .01);
-      globalAdminLayer.setVisible(paperReady && zoom >= 4.15);
-      fiberLayer.setVisible(paperReady && vectorReady && zoom >= 5.4);
-      pulpLayer.setVisible(paperReady && vectorReady && zoom >= 5.4);
-      grainLayer.setVisible(paperReady && vectorReady && zoom >= 5.4);
-      fiberLayer.setOpacity(.22 * smoothstep(5.45, 6.35, zoom) * (1 - .36 * smoothstep(8.4, 9.4, zoom)));
-      pulpLayer.setOpacity(.17 * smoothstep(6.7, 7.7, zoom));
-      grainLayer.setOpacity(.13 * smoothstep(8.1, 9.15, zoom));
-    };
-    const checkPaperReady = () => {
-      if (paperReady || !currentCoverageReady(paperTileGrid, loadedPaperTiles, 5)) return;
-      paperReady = true;
-      updateLayerOpacity();
-      map.render();
-    };
-    const checkVectorReady = () => {
-      const targetZoom = tileGrid.getZForResolution(
-        view.getResolution() || tileGrid.getResolution(tileGrid.getMinZoom()),
-        globalAdminSource.zDirection
-      );
-      if (vectorReady || !currentCoverageReady(tileGrid, loadedVectorTiles, targetZoom)) return;
-      vectorReady = true;
-      updateLayerOpacity();
-      syncCountryLayers();
-      map.render();
-    };
-    const onPaperLoad = (event: TileSourceEvent) => {
-      loadedPaperTiles.add(tileKey(event.tile.tileCoord));
-      checkPaperReady();
-    };
-    const onVectorLoad = (event: TileSourceEvent) => {
-      loadedVectorTiles.add(tileKey(event.tile.tileCoord));
-      checkVectorReady();
+      const resolution = view.getResolution() || baseResolution;
+      const relativeZoom = Math.max(0, Math.log2(baseResolution / resolution));
+      mapTargetRef.current?.classList.toggle('zoom-city', relativeZoom >= 3);
+      mapTargetRef.current?.classList.toggle('zoom-local', relativeZoom >= countryPackage.keepsakesFromZoom);
     };
     const updateScale = () => {
       scaleFrameRef.current = null;
@@ -457,8 +450,8 @@ export default function TravelApp({ manageRequested = false }: Props) {
       const end = map.getCoordinateFromPixel([size[0] / 2 + 60, centerY]);
       if (!start || !end) return;
       const metersPerPixel = getDistance(
-        transform(start, MAP_PROJECTION, 'EPSG:4326'),
-        transform(end, MAP_PROJECTION, 'EPSG:4326')
+        transform(start, projection, 'EPSG:4326'),
+        transform(end, projection, 'EPSG:4326')
       ) / 120;
       if (!Number.isFinite(metersPerPixel) || metersPerPixel <= 0) return;
       const target = metersPerPixel * 150;
@@ -476,54 +469,10 @@ export default function TravelApp({ manageRequested = false }: Props) {
       scaleFrameRef.current = requestAnimationFrame(updateScale);
     };
     view.on('change:resolution', updateZoomClass);
-    view.on('change:resolution', updateLayerOpacity);
     view.on('change:resolution', scheduleScale);
     view.on('change:center', scheduleScale);
     updateZoomClass();
-    updateLayerOpacity();
     scheduleScale();
-    paperSource.on('tileloadend', onPaperLoad);
-    globalAdminSource.on('tileloadend', onVectorLoad);
-
-    let adminManifest: { countries: Record<string, { file: string; bbox: [number, number, number, number] }> } | null = null;
-    const countryLayers = new globalThis.Map<string, VectorTileLayer>();
-    const projectedCountryExtent = (bbox: [number, number, number, number]) => {
-      const [west, south, east, north] = bbox;
-      const points: number[][] = [];
-      for (let step = 0; step <= 4; step += 1) {
-        const progress = step / 4;
-        points.push(
-          transform([west + (east - west) * progress, south], 'EPSG:4326', MAP_PROJECTION),
-          transform([west + (east - west) * progress, north], 'EPSG:4326', MAP_PROJECTION),
-          transform([west, south + (north - south) * progress], 'EPSG:4326', MAP_PROJECTION),
-          transform([east, south + (north - south) * progress], 'EPSG:4326', MAP_PROJECTION)
-        );
-      }
-      return boundingExtent(points);
-    };
-    syncCountryLayers = () => {
-      if (!adminManifest || !vectorReady || (view.getZoom() || 0) < 6.1) return;
-      const size = map.getSize();
-      if (!size) return;
-      const visible = view.calculateExtent(size);
-      for (const [countryCode, country] of Object.entries(adminManifest.countries)) {
-        const extent = projectedCountryExtent(country.bbox);
-        if (!intersects(visible, extent)) continue;
-        if (countryLayers.has(countryCode)) continue;
-        const layer = new VectorTileLayer({ source: adminSource(countryCode, 6), style: adminStyle, extent, declutter: false });
-        layer.setZIndex(21);
-        countryLayers.set(countryCode, layer);
-        map.addLayer(layer);
-      }
-    };
-    map.on('moveend', checkPaperReady);
-    map.on('moveend', checkVectorReady);
-    map.on('moveend', syncCountryLayers);
-    view.on('change:resolution', syncCountryLayers);
-    void fetch('/tiles/v2/admin/manifest.json', { credentials: 'same-origin' })
-      .then((response) => response.ok ? response.json() : Promise.reject(new Error('ADMIN_MANIFEST')))
-      .then((manifest) => { adminManifest = manifest; syncCountryLayers(); })
-      .catch(() => undefined);
 
     const panelOverlay = new Overlay({
       element: panelHost,
@@ -539,37 +488,40 @@ export default function TravelApp({ manageRequested = false }: Props) {
       event.preventDefault();
       if (!permissionRef.current.authenticated || !permissionRef.current.managementActive || isMobileEditor()) return;
       const coordinate = map.getEventCoordinate(event);
-      const [lng, lat] = transform(coordinate, MAP_PROJECTION, 'EPSG:4326');
+      const [lng, lat] = transform(coordinate, projection, 'EPSG:4326');
       setSelected(null);
       setDraft(freshDraft(lng, lat));
       setDirty(false);
     };
     map.getViewport().addEventListener('contextmenu', onContextMenu);
+    if (pendingFocusRef.current) {
+      const coordinate = transform(pendingFocusRef.current, 'EPSG:4326', projection);
+      pendingFocusRef.current = null;
+      view.animate({ center: coordinate, resolution: baseResolution / 2 ** 5, duration: 520 });
+    }
     setMapReady(true);
     return () => {
       view.un('change:resolution', updateZoomClass);
-      view.un('change:resolution', updateLayerOpacity);
       view.un('change:resolution', scheduleScale);
       view.un('change:center', scheduleScale);
-      paperSource.un('tileloadend', onPaperLoad);
-      globalAdminSource.un('tileloadend', onVectorLoad);
-      map.un('moveend', checkPaperReady);
-      map.un('moveend', checkVectorReady);
-      map.un('moveend', syncCountryLayers);
-      view.un('change:resolution', syncCountryLayers);
       if (scaleFrameRef.current !== null) cancelAnimationFrame(scaleFrameRef.current);
       map.getViewport().removeEventListener('contextmenu', onContextMenu);
       map.setTarget(undefined);
       mapRef.current = null;
       setMapReady(false);
     };
-  }, [panelHost]);
+  }, [activeCountry, countries, countryPackage, panelHost, selectCountry]);
 
   const openPin = useCallback(async (pinOrId: Pin | string, updateAddress = true) => {
     try {
       const pin = typeof pinOrId === 'string'
         ? await api<Pin>(`/api/pins/${encodeURIComponent(pinOrId)}`)
         : pinOrId;
+      const pinCountry = pin.country_code ? countries.find((country) => country.countryCode === pin.country_code) : null;
+      if (pinCountry && (!activeCountry || activeCountry.countryCode !== pinCountry.countryCode)) {
+        pendingFocusRef.current = [pin.lng, pin.lat];
+        await selectCountry(pinCountry);
+      }
       const map = mapRef.current;
       if (map && !openViewRef.current) {
         openViewRef.current = { center: [...(map.getView().getCenter() || [4096, -2048])], zoom: map.getView().getZoom() || 1 };
@@ -577,12 +529,14 @@ export default function TravelApp({ manageRequested = false }: Props) {
       setSelected(pin);
       setDraft(null);
       if (updateAddress && window.location.pathname !== `/p/${pin.id}`) history.pushState({ pinId: pin.id }, '', `/p/${pin.id}`);
-      const coordinate = transform([pin.lng, pin.lat], 'EPSG:4326', MAP_PROJECTION);
-      if (map && (map.getView().getZoom() || 0) < 3.15) map.getView().animate({ center: coordinate, zoom: 3.35, duration: 420 });
+      const coordinate = transform([pin.lng, pin.lat], 'EPSG:4326', activeProjectionRef.current);
+      if (map && activeCountry && (map.getView().getResolution() || 0) > (countryBaseResolutionRef.current || 1) / 2 ** 3) {
+        map.getView().animate({ center: coordinate, resolution: (countryBaseResolutionRef.current || 1) / 2 ** 5, duration: 420 });
+      }
     } catch {
       showToast(t('notFoundTitle'));
     }
-  }, [showToast, t]);
+  }, [activeCountry, countries, selectCountry, showToast, t]);
 
   const closePanel = useCallback((updateAddress = true) => {
     if (dirty && draft) {
@@ -622,16 +576,19 @@ export default function TravelApp({ manageRequested = false }: Props) {
     for (const overlay of pinOverlaysRef.current) map.removeOverlay(overlay);
     pinOverlaysRef.current = [];
 
-    for (const pin of pins) {
+    const worldMode = !activeCountry;
+    const projection = activeProjectionRef.current;
+    for (const pin of pins.filter((item) => !activeCountry || item.country_code === activeCountry.countryCode)) {
       const element = document.createElement('div');
       element.className = `pin-anchor${selected?.id === pin.id ? ' is-selected' : ''}`;
       element.style.setProperty('--rotation', `${((pin.id.split('').reduce((sum, char) => sum + char.charCodeAt(0), 0) % 9) - 4) * 0.72}deg`);
       const button = document.createElement('button');
       button.className = 'pin-button';
       button.type = 'button';
+      if (worldMode) button.disabled = true;
       button.style.setProperty('--pin-image', `url('${PIN_ASSETS[pin.color.toLowerCase()] || PIN_ASSETS[PIN_COLORS[0]]}')`);
       button.setAttribute('aria-label', t('pinLabel', { title: pin.title }));
-      button.addEventListener('click', (event) => { event.stopPropagation(); void openPin(pin); });
+      if (!worldMode) button.addEventListener('click', (event) => { event.stopPropagation(); void openPin(pin); });
       element.append(button);
 
       if (pin.place_name) {
@@ -641,6 +598,13 @@ export default function TravelApp({ manageRequested = false }: Props) {
         element.append(label);
       }
 
+      if (worldMode) {
+        const overlay = new Overlay({ element, positioning: 'center-center', stopEvent: false });
+        overlay.setPosition(transform([pin.lng, pin.lat], 'EPSG:4326', projection));
+        map.addOverlay(overlay);
+        pinOverlaysRef.current.push(overlay);
+        continue;
+      }
       const keepsake = document.createElement('button');
       keepsake.type = 'button';
       keepsake.setAttribute('aria-label', t('pinLabel', { title: pin.title }));
@@ -668,11 +632,11 @@ export default function TravelApp({ manageRequested = false }: Props) {
       keepsake.addEventListener('click', (event) => { event.stopPropagation(); void openPin(pin); });
       element.append(keepsake);
       const overlay = new Overlay({ element, positioning: 'center-center', stopEvent: true });
-      overlay.setPosition(transform([pin.lng, pin.lat], 'EPSG:4326', MAP_PROJECTION));
+      overlay.setPosition(transform([pin.lng, pin.lat], 'EPSG:4326', projection));
       map.addOverlay(overlay);
       pinOverlaysRef.current.push(overlay);
     }
-  }, [locale, mapReady, openPin, pins, selected?.id, t]);
+  }, [activeCountry, locale, mapReady, openPin, pins, selected?.id, t]);
 
   useEffect(() => {
     const active = draft || selected;
@@ -681,7 +645,7 @@ export default function TravelApp({ manageRequested = false }: Props) {
       return;
     }
     panelOverlayRef.current?.setElement(panelHost);
-    panelOverlayRef.current?.setPosition(transform([active.lng, active.lat], 'EPSG:4326', MAP_PROJECTION));
+    panelOverlayRef.current?.setPosition(transform([active.lng, active.lat], 'EPSG:4326', activeProjectionRef.current));
     const overlay = panelOverlayRef.current;
     const keepInsideViewport = () => overlay?.panIntoView({ animation: { duration: 280 }, margin: 28 });
     const frame = requestAnimationFrame(keepInsideViewport);
@@ -691,7 +655,7 @@ export default function TravelApp({ manageRequested = false }: Props) {
       cancelAnimationFrame(frame);
       observer.disconnect();
     };
-  }, [Boolean(draft), draft?.id, draft?.lat, draft?.lng, panelHost, selected?.id, selected?.lat, selected?.lng]);
+  }, [Boolean(draft), draft?.id, draft?.lat, draft?.lng, panelHost, selected?.id, selected?.lat, selected?.lng, activeCountry]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -699,25 +663,25 @@ export default function TravelApp({ manageRequested = false }: Props) {
     source.clear();
     ghostFeatureRef.current = null;
     if (!draft || !session.authenticated || !managementActive || isMobileEditor()) return;
-    const feature = new Feature(new Point(transform([draft.lng, draft.lat], 'EPSG:4326', MAP_PROJECTION)));
+    const feature = new Feature(new Point(transform([draft.lng, draft.lat], 'EPSG:4326', activeProjectionRef.current)));
     source.addFeature(feature);
     ghostFeatureRef.current = feature;
     const modify = new Modify({ source, pixelTolerance: 18 });
     modify.on('modifyend', () => {
       const coordinate = feature.getGeometry()?.getCoordinates();
       if (!coordinate) return;
-      const [lng, lat] = transform(coordinate, MAP_PROJECTION, 'EPSG:4326');
+      const [lng, lat] = transform(coordinate, activeProjectionRef.current, 'EPSG:4326');
       setDraft((current) => current ? { ...current, lng, lat, region_id: '', country_code: '' } : current);
       setDirty(true);
     });
     map?.addInteraction(modify);
     return () => { map?.removeInteraction(modify); source.clear(); };
-  }, [Boolean(draft), draft?.id, managementActive, session.authenticated]);
+  }, [Boolean(draft), draft?.id, managementActive, session.authenticated, activeCountry]);
 
   useEffect(() => {
     if (!draft || !ghostFeatureRef.current) return;
-    ghostFeatureRef.current.getGeometry()?.setCoordinates(transform([draft.lng, draft.lat], 'EPSG:4326', MAP_PROJECTION));
-    panelOverlayRef.current?.setPosition(transform([draft.lng, draft.lat], 'EPSG:4326', MAP_PROJECTION));
+    ghostFeatureRef.current.getGeometry()?.setCoordinates(transform([draft.lng, draft.lat], 'EPSG:4326', activeProjectionRef.current));
+    panelOverlayRef.current?.setPosition(transform([draft.lng, draft.lat], 'EPSG:4326', activeProjectionRef.current));
   }, [draft?.lat, draft?.lng]);
 
   useEffect(() => {
@@ -786,9 +750,15 @@ export default function TravelApp({ manageRequested = false }: Props) {
     }
   };
 
-  const chooseCandidate = (candidate: PlaceCandidate) => {
-    const coordinate = transform([candidate.lng, candidate.lat], 'EPSG:4326', MAP_PROJECTION);
-    mapRef.current?.getView().animate({ center: coordinate, zoom: 8.6, duration: 560 });
+  const chooseCandidate = async (candidate: PlaceCandidate) => {
+    const country = countries.find((item) => item.countryCode === candidate.countryCode);
+    if (country && (!activeCountry || activeCountry.countryCode !== country.countryCode)) {
+      pendingFocusRef.current = [candidate.lng, candidate.lat];
+      await selectCountry(country);
+    }
+    const coordinate = transform([candidate.lng, candidate.lat], 'EPSG:4326', activeProjectionRef.current);
+    const base = countryBaseResolutionRef.current || 1;
+    mapRef.current?.getView().animate({ center: coordinate, resolution: base / 2 ** 5, duration: 560 });
     setSearchOpen(false);
     if (draft) {
       setDraft({ ...draft, lng: candidate.lng, lat: candidate.lat, place_name: candidate.name, region_id: candidate.regionId, country_code: candidate.countryCode });
@@ -798,13 +768,19 @@ export default function TravelApp({ manageRequested = false }: Props) {
     }
   };
 
-  const chooseDraftCandidate = (candidate: PlaceCandidate) => {
+  const chooseDraftCandidate = async (candidate: PlaceCandidate) => {
     if (!draft) return;
-    const coordinate = transform([candidate.lng, candidate.lat], 'EPSG:4326', MAP_PROJECTION);
+    const country = countries.find((item) => item.countryCode === candidate.countryCode);
+    if (country && (!activeCountry || activeCountry.countryCode !== country.countryCode)) {
+      pendingFocusRef.current = [candidate.lng, candidate.lat];
+      await selectCountry(country);
+    }
+    const coordinate = transform([candidate.lng, candidate.lat], 'EPSG:4326', activeProjectionRef.current);
     setDraft({ ...draft, lng: candidate.lng, lat: candidate.lat, place_name: candidate.name, region_id: candidate.regionId, country_code: candidate.countryCode });
     setDraftCandidates([]);
     setDirty(true);
-    mapRef.current?.getView().animate({ center: coordinate, zoom: Math.max(8.6, mapRef.current.getView().getZoom() || 0), duration: 480 });
+    const base = countryBaseResolutionRef.current || 1;
+    mapRef.current?.getView().animate({ center: coordinate, resolution: Math.min(mapRef.current.getView().getResolution() || base, base / 2 ** 5), duration: 480 });
   };
 
   const switchLocale = () => {
@@ -949,9 +925,10 @@ export default function TravelApp({ manageRequested = false }: Props) {
 
   return (
     <main id="travel-root" className="travel-app">
-      <div ref={mapTargetRef} className="map-canvas paper-settle" role="application" aria-label={t('mapLabel')} />
+      <div ref={mapTargetRef} className={`map-canvas paper-settle ${activeCountry ? 'country-mode' : 'world-mode'}`} role="application" aria-label={t('mapLabel')} />
       <div ref={scaleRef} className="map-scale" aria-hidden="true" />
 
+      <button className="edge-action action-map" type="button" title={t('mapSelector')} aria-label={t('mapSelector')} onClick={() => setCountryMenuOpen((current) => !current)}><MapIcon /></button>
       <button className="edge-action action-search" type="button" title={t('search')} aria-label={t('search')} onClick={() => { setSearchOpen(true); setTimeout(() => searchInputRef.current?.focus(), 0); }}><Search /></button>
       <a className="edge-action action-home" href="https://ysoseri.us" title={t('home')} aria-label={t('home')}><Home /></a>
       <button className="edge-action action-manage" type="button" disabled={!sessionReady} title={session.authenticated && managementActive ? t('logout') : t('manage')} aria-label={session.authenticated && managementActive ? t('logout') : t('manage')} onClick={() => {
@@ -970,6 +947,27 @@ export default function TravelApp({ manageRequested = false }: Props) {
       {loading && <div className="status-toast">{t('loading')}</div>}
       {loadError && <div className="status-toast">{t('loadError')}</div>}
       {toast && <div className="status-toast" role="status">{toast}</div>}
+
+      {countryMenuOpen && (
+        <section className="country-menu floating-paper" aria-label={t('mapSelector')}>
+          <button type="button" className={!activeCountry ? 'is-active' : ''} onClick={returnToWorld}>{t('worldMap')}</button>
+          {countries.map((country) => <button type="button" key={country.countryCode} className={activeCountry?.countryCode === country.countryCode ? 'is-active' : ''} onClick={() => void selectCountry(country)}>{locale === 'zh' ? country.name.zh : country.name.en}</button>)}
+          {countryLoading && <small>{t('loading')}</small>}
+        </section>
+      )}
+
+      {countryChooserOpen && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={t('chooseCountryTitle')}>
+          <section className="modal-paper floating-paper country-chooser">
+            <h2>{t('chooseCountryTitle')}</h2>
+            <p>{t('chooseCountryBody')}</p>
+            <div className="country-choices">
+              {countries.map((country) => <button key={country.countryCode} type="button" onClick={() => void selectCountry(country)}>{locale === 'zh' ? country.name.zh : country.name.en}</button>)}
+            </div>
+            <div className="modal-actions"><button className="text-command" type="button" onClick={() => setCountryChooserOpen(false)}>{t('cancel')}</button></div>
+          </section>
+        </div>
+      )}
 
       {searchOpen && (
         <section className="search-panel floating-paper" aria-label={t('search')}>

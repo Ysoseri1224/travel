@@ -98,8 +98,8 @@ select:focus-visible {
 .edge-action {
   position: fixed;
   z-index: 25;
-  width: 42px;
-  height: 42px;
+  width: 54px;
+  height: 54px;
   padding: 0;
   display: grid;
   place-items: center;
@@ -121,9 +121,11 @@ select:focus-visible {
 }
 
 .edge-action svg { width: 19px; height: 19px; stroke-width: 1.7; }
-.action-search { top: max(18px, env(safe-area-inset-top)); left: max(18px, env(safe-area-inset-left)); }
+.action-map { top: max(18px, env(safe-area-inset-top)); left: max(18px, env(safe-area-inset-left)); }
+.action-search { top: max(84px, calc(env(safe-area-inset-top) + 66px)); left: max(18px, env(safe-area-inset-left)); }
 .action-home { bottom: max(18px, env(safe-area-inset-bottom)); left: max(18px, env(safe-area-inset-left)); }
 .action-manage { bottom: max(18px, env(safe-area-inset-bottom)); right: max(18px, env(safe-area-inset-right)); }
+.world-mode ~ .map-scale { display: none; }
 
 .source-note {
   position: fixed;
@@ -144,7 +146,7 @@ select:focus-visible {
   top: max(20px, env(safe-area-inset-top));
   right: max(20px, env(safe-area-inset-right));
   color: rgba(55, 41, 31, .72);
-  font: 13px/1.2 "LXGW WenKai", "IM FELL English", serif;
+  font: 24px/1.2 "LXGW WenKai", "IM FELL English", serif;
   text-shadow: 0 1px rgba(238, 216, 174, .44);
   pointer-events: none;
 }
@@ -238,6 +240,8 @@ select:focus-visible {
 }
 .pin-button:hover { transform: translateY(-2px); filter: drop-shadow(2px 6px 3px rgba(30,18,12,.22)); }
 .pin-button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; border-radius: 45%; }
+.world-mode .pin-button { cursor: default; }
+.world-mode .pin-button:disabled { opacity: .92; }
 .pin-anchor.is-selected .pin-button { transform: translateY(-2px) scale(1.04); filter: drop-shadow(2px 6px 3px rgba(30,18,12,.24)); }
 
 .map-keepsake {
@@ -365,17 +369,44 @@ select:focus-visible {
 
 .ghost-location { width: 24px; height: 24px; border: 2px solid rgba(255,255,255,.72); border-radius: 50%; background: var(--coral); box-shadow: 0 5px 13px rgba(37,20,13,.4); }
 .status-toast { position: fixed; z-index: 55; left: 50%; top: 18px; transform: translateX(-50%); padding: 8px 12px; border-radius: 3px; background: rgba(36,29,24,.84); color: #f3e5c8; font-size: 12px; }
+.country-menu {
+  position: fixed;
+  z-index: 36;
+  top: max(82px, calc(env(safe-area-inset-top) + 68px));
+  left: max(18px, env(safe-area-inset-left));
+  min-width: 210px;
+  padding: 8px;
+  display: grid;
+  gap: 3px;
+}
+.country-menu button,
+.country-choices button {
+  min-height: 42px;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--paper-ink);
+  text-align: left;
+  cursor: pointer;
+}
+.country-menu button:hover,
+.country-menu button.is-active,
+.country-choices button:hover { background: rgba(83,55,32,.1); }
+.country-menu small { padding: 6px 12px; color: var(--paper-muted); }
+.country-choices { display: grid; gap: 6px; }
+.country-choices button { border: 1px solid rgba(78,52,32,.22); background: rgba(255,250,230,.25); font-size: 18px; }
 .noscript-copy { max-width: 680px; margin: 10vh auto; padding: 30px; background: #d9bf8b; color: #35281f; }
 
 @media (max-width: 720px) {
-  .edge-action { width: 40px; height: 40px; }
+  .edge-action { width: 46px; height: 46px; }
   .source-note { bottom: calc(max(10px, env(safe-area-inset-bottom)) + 48px); max-width: calc(100vw - 36px); overflow: hidden; text-overflow: ellipsis; }
   .node-overlay { position: fixed !important; left: 10px !important; right: 10px !important; bottom: max(10px, env(safe-area-inset-bottom)) !important; top: auto !important; width: auto; max-height: 66dvh; transform: none !important; }
   .node-panel,.node-overlay { max-height: 66dvh; }
   .panel-scroll { padding: 24px 20px 22px; }
   .node-title { font-size: 26px; }
   .map-keepsake { display: none; }
-  .footprint-stats { top: 21px; right: 72px; max-width: calc(100vw - 150px); font-size: 11px; text-align: right; }
+  .footprint-stats { top: 21px; right: 72px; max-width: calc(100vw - 150px); font-size: 16px; text-align: right; }
   .place-label { font-size: 12px; }
   .field-row { grid-template-columns: 1fr; }
 }

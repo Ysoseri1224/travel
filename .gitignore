@@ -2,6 +2,8 @@
 map-renderer/.cache/
 map-renderer/node_modules/
 map-renderer/output/
+map-renderer/config/country-render.json
+country-build/
 node_modules/
 .astro/
 dist/

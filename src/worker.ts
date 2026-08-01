@@ -61,6 +61,43 @@ interface Candidate {
   provider: 'Amap' | 'Google';
 }
 
+interface CountryRow {
+  country_code: string;
+  iso3: string | null;
+  name_en: string;
+  name_zh: string | null;
+  status: 'pending' | 'building' | 'ready' | 'failed';
+  package_version: string | null;
+  manifest_key: string | null;
+  bbox_json: string | null;
+  last_error: string | null;
+  updated_at: string;
+}
+
+interface CountryManifest {
+  schemaVersion: number;
+  countryCode: string;
+  iso3: string;
+  name: { en: string; zh?: string };
+  status: 'ready';
+  packageVersion: string;
+  bounds: [number, number, number, number];
+  baseZoom: number;
+  maxZoom: number;
+  keepsakesFromZoom: number;
+  raster: { key: string; width: number; height: number; sha256: string };
+}
+
+interface CountryBuildCallback {
+  jobId?: unknown;
+  countryCode?: unknown;
+  status?: unknown;
+  packageVersion?: unknown;
+  manifestKey?: unknown;
+  githubRunId?: unknown;
+  error?: unknown;
+}
+
 const SESSION_COOKIE = '__Host-travel_session';
 const LOCAL_SESSION_COOKIE = 'travel_session_local';
 const SESSION_SECONDS = 30 * 24 * 60 * 60;
@@ -127,6 +164,12 @@ async function secureEqual(left: string, right: string): Promise<boolean> {
     crypto.subtle.digest('SHA-256', encoder.encode(right))
   ]);
   return crypto.subtle.timingSafeEqual(leftHash, rightHash);
+}
+
+async function hmacHex(secret: string, value: string): Promise<string> {
+  const key = await crypto.subtle.importKey('raw', encoder.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const signature = await crypto.subtle.sign('HMAC', key, encoder.encode(value));
+  return [...new Uint8Array(signature)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
 function isoAfter(seconds: number): string {
@@ -258,6 +301,110 @@ async function pinStats(env: Env): Promise<{ cities: number; countries: number }
   return { cities: Number(row?.cities || 0), countries: Number(row?.countries || 0) };
 }
 
+function serializeCountry(row: CountryRow): Record<string, unknown> {
+  return {
+    countryCode: row.country_code,
+    iso3: row.iso3,
+    name: { en: row.name_en, zh: row.name_zh || row.name_en },
+    status: row.status,
+    packageVersion: row.package_version,
+    manifestUrl: row.manifest_key ? `/tiles/${row.manifest_key}` : null,
+    bounds: row.bbox_json ? JSON.parse(row.bbox_json) as unknown : null,
+    updatedAt: row.updated_at
+  };
+}
+
+async function listReadyCountries(env: Env): Promise<Array<Record<string, unknown>>> {
+  const rows = await env.DB.prepare(`SELECT country_code,iso3,name_en,name_zh,status,package_version,manifest_key,bbox_json,last_error,updated_at
+    FROM countries WHERE status='ready' AND manifest_key IS NOT NULL ORDER BY country_code`).all<CountryRow>();
+  return rows.results.map(serializeCountry);
+}
+
+async function dispatchCountryBuild(env: Env, jobId: string, countryCode: string): Promise<void> {
+  const response = await fetch(`https://api.github.com/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/dispatches`, {
+    method: 'POST',
+    headers: {
+      accept: 'application/vnd.github+json',
+      authorization: `Bearer ${env.GITHUB_TOKEN}`,
+      'content-type': 'application/json',
+      'user-agent': 'ysoseri-travel-worker',
+      'x-github-api-version': '2022-11-28'
+    },
+    body: JSON.stringify({ event_type: 'travel-country-build', client_payload: { country_code: countryCode, job_id: jobId } })
+  });
+  if (response.status !== 204) throw new Error(`GITHUB_DISPATCH_${response.status}`);
+}
+
+async function ensureCountryBuild(env: Env, countryCode: string): Promise<void> {
+  const normalized = countryCode.toUpperCase();
+  const current = await env.DB.prepare('SELECT status FROM countries WHERE country_code=?').bind(normalized).first<{ status: string }>();
+  if (current?.status === 'ready' || current?.status === 'building' || current?.status === 'pending') return;
+  const jobId = crypto.randomUUID();
+  await env.DB.batch([
+    env.DB.prepare(`INSERT INTO countries (country_code,iso3,name_en,name_zh,status)
+      VALUES (?,NULL,?,NULL,'pending')
+      ON CONFLICT(country_code) DO UPDATE SET status='pending',last_error=NULL,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+      WHERE countries.status='failed'`).bind(normalized, normalized),
+    env.DB.prepare(`INSERT OR IGNORE INTO country_build_jobs (id,country_code,status) VALUES (?,?,'pending')`).bind(jobId, normalized)
+  ]);
+  const active = await env.DB.prepare(`SELECT id FROM country_build_jobs WHERE country_code=? AND status IN ('pending','building') ORDER BY requested_at LIMIT 1`)
+    .bind(normalized).first<{ id: string }>();
+  if (!active || active.id !== jobId) return;
+  await env.DB.batch([
+    env.DB.prepare("UPDATE countries SET status='building',updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE country_code=? AND status='pending'").bind(normalized),
+    env.DB.prepare("UPDATE country_build_jobs SET status='building',attempts=attempts+1,started_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND status='pending'").bind(jobId)
+  ]);
+  try {
+    await dispatchCountryBuild(env, jobId, normalized);
+  } catch (caught) {
+    const message = caught instanceof Error ? caught.message.slice(0, 500) : 'GITHUB_DISPATCH_FAILED';
+    await env.DB.batch([
+      env.DB.prepare("UPDATE countries SET status='failed',last_error=?,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE country_code=?").bind(message, normalized),
+      env.DB.prepare("UPDATE country_build_jobs SET status='failed',error=?,finished_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?").bind(message, jobId)
+    ]);
+    throw caught;
+  }
+}
+
+async function handleCountryBuildCallback(request: Request, env: Env): Promise<Response> {
+  if (request.method !== 'POST') return error('METHOD_NOT_ALLOWED', 405);
+  const text = await request.text();
+  if (text.length > 20_000) return error('PAYLOAD_TOO_LARGE', 413);
+  const supplied = request.headers.get('x-country-build-signature') || '';
+  const expected = `sha256=${await hmacHex(env.COUNTRY_BUILD_CALLBACK_SECRET, text)}`;
+  if (!(await secureEqual(supplied, expected))) return error('INVALID_SIGNATURE', 401);
+  const payload = JSON.parse(text) as CountryBuildCallback;
+  const jobId = asOptionalString(payload.jobId, 100);
+  const countryCode = asOptionalString(payload.countryCode, 2)?.toUpperCase();
+  const status = payload.status === 'ready' || payload.status === 'failed' ? payload.status : null;
+  if (!jobId || !countryCode || !/^[A-Z]{2}$/.test(countryCode) || !status) return error('INVALID_CALLBACK', 400);
+  const job = await env.DB.prepare('SELECT id FROM country_build_jobs WHERE id=? AND country_code=?').bind(jobId, countryCode).first();
+  if (!job) return error('BUILD_JOB_NOT_FOUND', 404);
+  if (status === 'failed') {
+    const message = asOptionalString(payload.error, 500) || 'COUNTRY_BUILD_FAILED';
+    await env.DB.batch([
+      env.DB.prepare("UPDATE countries SET status='failed',last_error=?,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE country_code=?").bind(message, countryCode),
+      env.DB.prepare("UPDATE country_build_jobs SET status='failed',github_run_id=?,error=?,finished_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?").bind(asOptionalString(payload.githubRunId, 80), message, jobId)
+    ]);
+    return json({ ok: true, status: 'failed' });
+  }
+  const manifestKey = asOptionalString(payload.manifestKey, 300);
+  const packageVersion = asOptionalString(payload.packageVersion, 120);
+  if (!manifestKey || !packageVersion || manifestKey !== `v3/countries/${countryCode}/manifest.json`) return error('INVALID_MANIFEST', 400);
+  const object = await env.TRAVEL_TILES.get(manifestKey);
+  if (!object) return error('MANIFEST_NOT_FOUND', 409);
+  const manifest = await new Response(object.body).json() as CountryManifest;
+  if (manifest.countryCode !== countryCode || manifest.packageVersion !== packageVersion || manifest.status !== 'ready') return error('MANIFEST_MISMATCH', 409);
+  await env.DB.batch([
+    env.DB.prepare(`UPDATE countries SET iso3=?,name_en=?,name_zh=?,status='ready',package_version=?,manifest_key=?,bbox_json=?,last_error=NULL,
+      updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE country_code=?`)
+      .bind(manifest.iso3, manifest.name.en, manifest.name.zh || null, packageVersion, manifestKey, JSON.stringify(manifest.bounds), countryCode),
+    env.DB.prepare("UPDATE country_build_jobs SET status='ready',github_run_id=?,error=NULL,finished_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?")
+      .bind(asOptionalString(payload.githubRunId, 80), jobId)
+  ]);
+  return json({ ok: true, status: 'ready' });
+}
+
 async function replaceMedia(env: Env, pinId: string, media: Array<{ media_id: string; sort_order: number; caption: string | null }>): Promise<void> {
   if (media.length) {
     const placeholders = media.map(() => '?').join(',');
@@ -296,7 +443,7 @@ async function handleAuth(request: Request, env: Env, path: string): Promise<Res
   return error('NOT_FOUND', 404);
 }
 
-async function handlePins(request: Request, env: Env, path: string): Promise<Response> {
+async function handlePins(request: Request, env: Env, ctx: ExecutionContext, path: string): Promise<Response> {
   const id = path.match(/^\/api\/pins\/([^/]+)$/)?.[1];
   if (request.method === 'GET' && !id) {
     const [pins, stats] = await Promise.all([listPins(env), pinStats(env)]);
@@ -327,6 +474,9 @@ async function handlePins(request: Request, env: Env, path: string): Promise<Res
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
       .bind(pinId, value.title, value.lat, value.lng, value.placeName, value.placeNames, value.regionId, value.countryCode, value.eventDate, value.color, value.content, value.photoStyle, value.coverMediaId).run();
     await replaceMedia(env, pinId, value.media);
+    ctx.waitUntil(ensureCountryBuild(env, value.countryCode!).catch((caught: unknown) => {
+      console.error(JSON.stringify({ event: 'country_build_dispatch_error', countryCode: value.countryCode, error: caught instanceof Error ? caught.message : 'UNKNOWN' }));
+    }));
     return json(await getPin(env, pinId), 201);
   }
   if (request.method === 'PUT' && id) {
@@ -338,6 +488,9 @@ async function handlePins(request: Request, env: Env, path: string): Promise<Res
     await env.DB.prepare(`UPDATE pins SET title=?,lat=?,lng=?,place_name=?,place_names=?,region_id=?,country_code=?,event_date=?,color=?,content=?,photo_style=?,cover_media_id=?,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND deleted_at IS NULL`)
       .bind(value.title, value.lat, value.lng, value.placeName, value.placeNames, value.regionId, value.countryCode, value.eventDate, value.color, value.content, value.photoStyle, value.coverMediaId, pinId).run();
     await replaceMedia(env, pinId, value.media);
+    ctx.waitUntil(ensureCountryBuild(env, value.countryCode!).catch((caught: unknown) => {
+      console.error(JSON.stringify({ event: 'country_build_dispatch_error', countryCode: value.countryCode, error: caught instanceof Error ? caught.message : 'UNKNOWN' }));
+    }));
     return json(await getPin(env, pinId));
   }
   if (request.method === 'DELETE' && id) {
@@ -642,7 +795,12 @@ async function serveTile(request: Request, env: Env, ctx: ExecutionContext): Pro
     : match[2].endsWith('.mvt') ? 'application/vnd.mapbox-vector-tile'
       : match[2].endsWith('.pmtiles') ? 'application/octet-stream'
         : 'application/json';
-  const headers = responseHeaders({ 'content-type': contentType, 'cache-control': 'public, max-age=31536000, immutable', etag: object.httpEtag, 'accept-ranges': 'bytes' });
+  const headers = responseHeaders({
+    'content-type': contentType,
+    'cache-control': match[2].endsWith('manifest.json') ? 'public, max-age=60, stale-while-revalidate=300' : 'public, max-age=31536000, immutable',
+    etag: object.httpEtag,
+    'accept-ranges': 'bytes'
+  });
   let status = 200;
   if (rangeHeader) {
     const explicit = rangeHeader.match(/^bytes=(\d+)-(\d*)$/);
@@ -703,10 +861,12 @@ async function handleRequest(request: Request, env: Env, ctx: ExecutionContext):
     if (request.method === 'GET' && path === '/robots.txt') return new Response(`User-agent: *\nAllow: /\nDisallow: /manage\nDisallow: /api/\nSitemap: ${env.APP_ORIGIN}/sitemap.xml\n`, { headers: responseHeaders({ 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'public, max-age=3600' }) });
     if (request.method === 'GET' && path === '/sitemap.xml') return sitemap(env);
     if (request.method === 'GET' && path.startsWith('/tiles/')) return serveTile(request, env, ctx);
+    if (path === '/api/internal/country-build/callback') return handleCountryBuildCallback(request, env);
     if (path.startsWith('/api/auth/')) return handleAuth(request, env, path);
+    if (path === '/api/countries' && request.method === 'GET') return json({ countries: await listReadyCountries(env) }, 200, { 'cache-control': 'public, max-age=60, stale-while-revalidate=300' });
     if (path === '/api/search/places' && request.method === 'GET') return searchPlaces(request, env);
     if (path === '/api/media' || path.startsWith('/media/')) return handleMedia(request, env, path);
-    if (path === '/api/pins' || path.startsWith('/api/pins/')) return handlePins(request, env, path);
+    if (path === '/api/pins' || path.startsWith('/api/pins/')) return handlePins(request, env, ctx, path);
     if (path.startsWith('/api/')) return error('NOT_FOUND', 404);
     return env.ASSETS.fetch(request);
   } catch (caught) {

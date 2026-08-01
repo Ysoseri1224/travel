@@ -1,0 +1,72 @@
+name: Build country map
+
+on:
+  repository_dispatch:
+    types: [travel-country-build]
+  workflow_dispatch:
+    inputs:
+      country_code:
+        description: ISO-3166 alpha-2 country code
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: travel-country-${{ github.event.client_payload.country_code || inputs.country_code }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      COUNTRY_CODE: ${{ github.event.client_payload.country_code || inputs.country_code }}
+      COUNTRY_JOB_ID: ${{ github.event.client_payload.job_id || format('manual-{0}', github.run_id) }}
+      COUNTRY_PACKAGE_VERSION: build-${{ github.run_id }}
+      RENDER_CONFIG: config/country-render.json
+      R2_ENDPOINT: ${{ secrets.TRAVEL_R2_ENDPOINT }}
+      R2_ACCESS_KEY_ID: ${{ secrets.TRAVEL_R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.TRAVEL_R2_SECRET_ACCESS_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Validate country code
+        shell: bash
+        run: |
+          [[ "$COUNTRY_CODE" =~ ^[A-Z]{2}$ ]] || { echo "COUNTRY_CODE must be uppercase ISO alpha-2"; exit 2; }
+
+      - name: Install application dependencies
+        run: npm ci
+
+      - name: Install renderer dependencies
+        run: npm ci --prefix map-renderer
+
+      - name: Render country package
+        run: npm run render:country
+
+      - name: Upload immutable package to R2
+        run: npm run upload:country
+
+      - name: Upload diagnostic artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: travel-country-${{ env.COUNTRY_CODE }}-${{ github.run_id }}
+          path: country-build/${{ env.COUNTRY_CODE }}/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Report result to Travel Worker
+        if: always() && github.event_name == 'repository_dispatch'
+        env:
+          BUILD_STATUS: ${{ job.status }}
+          TRAVEL_CALLBACK_URL: https://travel.ysoseri.us/api/internal/country-build/callback
+          TRAVEL_BUILD_CALLBACK_SECRET: ${{ secrets.TRAVEL_BUILD_CALLBACK_SECRET }}
+        run: node scripts/callback-country-build.mjs

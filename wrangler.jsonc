@@ -30,7 +30,9 @@
   ],
   "vars": {
     "APP_ORIGIN": "https://travel.ysoseri.us",
-    "TILE_VERSION": "v1"
+    "TILE_VERSION": "v1",
+    "GITHUB_OWNER": "Ysoseri1224",
+    "GITHUB_REPO": "travel"
   },
   "observability": { "enabled": true, "head_sampling_rate": 1 }
 }
