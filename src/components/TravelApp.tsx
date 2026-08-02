@@ -57,6 +57,14 @@ addCoordinateTransforms(
 );
 
 const PIN_COLORS = ['#c85f3c', '#47756f', '#d19a3b', '#805b88', '#55739a', '#9a4d4b'];
+const PIN_COLOR_LABELS: Record<string, TranslationKey> = {
+  '#c85f3c': 'pinColorCoral',
+  '#47756f': 'pinColorVerdigris',
+  '#d19a3b': 'pinColorOchre',
+  '#805b88': 'pinColorViolet',
+  '#55739a': 'pinColorBlue',
+  '#9a4d4b': 'pinColorRed'
+};
 const PIN_ASSETS: Record<string, string> = {
   '#c85f3c': '/pins/v1/pushpin-coral-v1.webp',
   '#47756f': '/pins/v1/pushpin-verdigris-v1.webp',
@@ -146,6 +154,16 @@ function freshDraft(lng: number, lat: number): DraftPin {
 
 function isMobileEditor(): boolean {
   return window.matchMedia('(max-width: 820px), (pointer: coarse)').matches;
+}
+
+function formatEventDate(value: string, locale: Locale): string {
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return value;
+  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+  return new Intl.DateTimeFormat(locale === 'zh' ? 'zh-CN' : 'en-NZ', {
+    dateStyle: 'long',
+    timeZone: 'UTC'
+  }).format(date);
 }
 
 function createCountryProjection(country: CountryCatalogItem, manifest: CountryPackage): Projection {
@@ -275,6 +293,16 @@ export default function TravelApp({ manageRequested = false }: Props) {
   const t = useCallback((key: TranslationKey, values?: Record<string, string | number>) => translate(locale, key, values), [locale]);
   const renderedContent = useMemo(() => DOMPurify.sanitize(marked.parse(selected?.content || '') as string), [selected?.content]);
   const renderedDraft = useMemo(() => DOMPurify.sanitize(marked.parse(draft?.content || '') as string), [draft?.content]);
+
+  useEffect(() => {
+    const pageTitle = managementActive
+      ? `${t('manage')} · ${t('appName')} · ysoseri.us`
+      : `${t('appName')} · ysoseri.us`;
+    document.title = pageTitle;
+    document.querySelector<HTMLMetaElement>('meta[name="description"]')?.setAttribute('content', t('appDescription'));
+    document.querySelector<HTMLMetaElement>('meta[property="og:title"]')?.setAttribute('content', pageTitle);
+    document.querySelector<HTMLMetaElement>('meta[property="og:description"]')?.setAttribute('content', t('appDescription'));
+  }, [managementActive, t]);
 
   const showToast = useCallback((message: string) => {
     setToast(message);
@@ -1054,6 +1082,7 @@ export default function TravelApp({ manageRequested = false }: Props) {
 
       <button className="edge-action action-map" type="button" title={t('mapSelector')} aria-label={t('mapSelector')} onClick={() => setCountryMenuOpen((current) => !current)}><MapIcon /></button>
       <button className="edge-action action-search" type="button" title={t('search')} aria-label={t('search')} onClick={() => { setSearchOpen(true); setTimeout(() => searchInputRef.current?.focus(), 0); }}><Search /></button>
+      <button className="edge-action action-language" type="button" onClick={switchLocale} title={locale === 'zh' ? t('switchEnglish') : t('switchChinese')} aria-label={locale === 'zh' ? t('switchEnglish') : t('switchChinese')}><Languages aria-hidden="true" /><span aria-hidden="true">{locale === 'zh' ? 'EN' : '中'}</span></button>
       <a className="edge-action action-home" href="https://ysoseri.us" title={t('home')} aria-label={t('home')}><Home /></a>
       <button className="edge-action action-manage" type="button" disabled={!sessionReady} title={session.authenticated && managementActive ? t('logout') : t('manage')} aria-label={session.authenticated && managementActive ? t('logout') : t('manage')} onClick={() => {
         if (!session.authenticated) { setLoginOpen(true); return; }
@@ -1098,7 +1127,6 @@ export default function TravelApp({ manageRequested = false }: Props) {
           <form className="search-row" onSubmit={submitSearch}>
             <button className="icon-command search-submit" type="submit" aria-label={t('search')} title={t('search')}><Search aria-hidden="true" /></button>
             <input ref={searchInputRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t('searchPlaceholder')} aria-label={t('searchPlaceholder')} />
-            <button className="language-switch" type="button" onClick={switchLocale} title={locale === 'zh' ? t('switchEnglish') : t('switchChinese')} aria-label={locale === 'zh' ? t('switchEnglish') : t('switchChinese')}><Languages size={15} aria-hidden="true" /> {locale === 'zh' ? 'EN' : '中'}</button>
             <button className="icon-command" type="button" aria-label={t('close')} title={t('close')} onClick={() => setSearchOpen(false)}><X /></button>
           </form>
           {(searching || searchError || (!searching && searchedQuery === query.normalize('NFKC').trim() && !!searchedQuery && !searchResults.length)) && <p className="search-status">{searching ? t('searching') : searchError ? t('searchError') : t('searchEmpty')}</p>}
@@ -1140,7 +1168,7 @@ export default function TravelApp({ manageRequested = false }: Props) {
                   </div>
                   <div className="field">
                     <span>{t('pinColor')}</span>
-                    <div className="color-swatches" role="radiogroup" aria-label={t('pinColor')}>{PIN_COLORS.map((color) => <button key={color} type="button" className="color-swatch" style={{ background: color }} role="radio" aria-checked={draft.color === color} aria-label={color} onClick={() => updateDraft('color', color)} />)}</div>
+                    <div className="color-swatches" role="radiogroup" aria-label={t('pinColor')}>{PIN_COLORS.map((color) => <button key={color} type="button" className="color-swatch" style={{ background: color }} role="radio" aria-checked={draft.color === color} aria-label={t(PIN_COLOR_LABELS[color])} title={t(PIN_COLOR_LABELS[color])} onClick={() => updateDraft('color', color)} />)}</div>
                   </div>
                   <div className="field">
                     <span>{t('content')}</span>
@@ -1158,7 +1186,7 @@ export default function TravelApp({ manageRequested = false }: Props) {
               ) : selected ? (
                 <>
                   <h1 className="node-title">{selected.title}</h1>
-                  <div className="node-meta">{selected.place_name && <span>{selected.place_name}</span>}{selected.event_date && <time dateTime={selected.event_date}>{selected.event_date}</time>}</div>
+                  <div className="node-meta">{selected.place_name && <span>{selected.place_names?.[locale] || selected.place_name}</span>}{selected.event_date && <time dateTime={selected.event_date}>{formatEventDate(selected.event_date, locale)}</time>}</div>
                   {!!selected.media.length && <div className="media-grid">{selected.media.map((media) => <button type="button" className="media-thumb" key={media.id} title={t('mediaOpen')} aria-label={t('mediaOpen')} onClick={() => setLightbox(media)}>{media.content_type.startsWith('video/') ? <video src={media.url} muted preload="metadata" /> : <img src={media.url} alt={media.caption || selected.title} loading="eager" />}</button>)}</div>}
                   <div className="node-content" dangerouslySetInnerHTML={{ __html: renderedContent }} />
                 </>

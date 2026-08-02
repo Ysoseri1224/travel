@@ -24,6 +24,38 @@ test('world map renders with interactive search', async ({ page }, testInfo) => 
   expect(browserErrors).toEqual([]);
 });
 
+test('language switch remains visible and updates all interface chrome', async ({ page }) => {
+  await page.addInitScript(() => window.localStorage.setItem('travel-locale', 'zh'));
+  await page.goto('/');
+  const language = page.locator('.action-language');
+  await expect(language).toBeVisible();
+  await expect(page.locator('.search-panel')).toHaveCount(0);
+  await expect(page.locator('.footprint-stats')).toContainText('共去过');
+  await expect(page).toHaveTitle(/旅行地图/);
+
+  await language.click();
+  await expect(page.locator('html')).toHaveAttribute('lang', 'en');
+  await expect(page.locator('.footprint-stats')).toContainText('Visited');
+  await expect(page.locator('.action-search')).toHaveAttribute('title', 'Search footprints');
+  await expect(page).toHaveTitle(/Travel Map/);
+
+  await page.locator('.action-map').click();
+  await expect(page.locator('.country-menu')).toContainText('World overview');
+  await page.locator('.action-map').click();
+  await expect(page.locator('.country-menu')).toHaveCount(0);
+  await page.locator('.action-search').click();
+  await expect(page.locator('.search-row input')).toHaveAttribute('placeholder', 'Country, province, city, or note text');
+  await expect(page.locator('.search-panel .action-language')).toHaveCount(0);
+
+  await page.evaluate(() => window.localStorage.setItem('travel-locale', 'zh'));
+  await page.goto('/manage');
+  await expect(page.locator('.login-form')).toBeVisible();
+  await expect(page.locator('.modal-paper h2')).toHaveText('进入地图管理');
+  await expect(language).toBeVisible();
+  await language.click();
+  await expect(page.locator('.modal-paper h2')).toHaveText('Enter map management');
+});
+
 test('desktop management keeps the map interactive beside a fixed editor drawer', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== 'desktop', 'editing is desktop-only');
   await page.goto('/manage');

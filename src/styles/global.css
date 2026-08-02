@@ -123,6 +123,16 @@ select:focus-visible {
 .edge-action svg { width: 19px; height: 19px; stroke-width: 1.7; }
 .action-map { top: max(18px, env(safe-area-inset-top)); left: max(18px, env(safe-area-inset-left)); }
 .action-search { top: max(84px, calc(env(safe-area-inset-top) + 66px)); left: max(18px, env(safe-area-inset-left)); }
+.action-language { z-index: 90; top: max(76px, calc(env(safe-area-inset-top) + 58px)); right: max(18px, env(safe-area-inset-right)); }
+.action-language span {
+  position: absolute;
+  right: 6px;
+  bottom: 5px;
+  min-width: 17px;
+  color: currentColor;
+  font: 600 9px/1 "IM FELL English", "LXGW WenKai", serif;
+  text-align: center;
+}
 .action-home { bottom: max(18px, env(safe-area-inset-bottom)); left: max(18px, env(safe-area-inset-left)); }
 .action-manage { bottom: max(18px, env(safe-area-inset-bottom)); right: max(18px, env(safe-area-inset-right)); }
 .world-mode ~ .map-scale { display: none; }
@@ -221,8 +231,6 @@ select:focus-visible {
 .result-address { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--paper-muted); font-size: 12px; }
 .result-excerpt { grid-column: 1; overflow: hidden; color: rgba(73, 52, 36, .74); font-size: 11px; line-height: 1.45; }
 .result-count { grid-row: 1 / span 3; grid-column: 2; align-self: center; color: var(--verdigris); font-size: 11px; white-space: nowrap; }
-.language-switch { margin-left: auto; padding: 3px 5px; border: 0; background: transparent; color: var(--paper-muted); cursor: pointer; font-size: 12px; }
-
 .pin-anchor { position: relative; width: 52px; height: 58px; pointer-events: auto; }
 .pin-button {
   appearance: none;

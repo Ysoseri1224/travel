@@ -10,4 +10,9 @@ describe('translate', () => {
   it('interpolates dynamic values', () => {
     expect(translate('en', 'searchCountMany', { count: 3 })).toContain('3');
   });
+
+  it('covers controls that are exposed outside the search panel', () => {
+    expect(translate('zh', 'switchEnglish')).toBe('切换到英文');
+    expect(translate('en', 'pinColorCoral')).toBe('Coral');
+  });
 });
