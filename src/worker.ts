@@ -467,11 +467,11 @@ async function handlePins(request: Request, env: Env, ctx: ExecutionContext, pat
   const id = path.match(/^\/api\/pins\/([^/]+)$/)?.[1];
   if (request.method === 'GET' && !id) {
     const [pins, stats] = await Promise.all([listPins(env), pinStats(env)]);
-    return json({ pins, stats }, 200, { 'cache-control': 'public, max-age=20, stale-while-revalidate=120' });
+    return json({ pins, stats }, 200, { 'cache-control': 'no-store' });
   }
   if (request.method === 'GET' && id) {
     const pin = await getPin(env, decodeURIComponent(id));
-    return pin ? json(pin, 200, { 'cache-control': 'public, max-age=30, stale-while-revalidate=120' }) : error('PIN_NOT_FOUND', 404);
+    return pin ? json(pin, 200, { 'cache-control': 'no-store' }) : error('PIN_NOT_FOUND', 404);
   }
   const auth = await requireMutationAuth(request, env);
   if (auth instanceof Response) return auth;

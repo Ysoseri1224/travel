@@ -90,10 +90,11 @@ function newZealandHierarchy(pin) {
   if (!feature) return null;
   const properties = feature.properties || {};
   const parentId = String(properties.shapeISO || properties.shapeID || properties.shapeName);
-  const localCity = cityName(pin);
+  const localCity = cityName(pin).replace(/^(?:新西兰|纽西兰)/u, '').trim();
+  const titleCity = String(pin.title || '').replace(/^(?:新西兰|纽西兰)/u, '').trim();
   return {
-    cityEn: nzCityNames.get(localCity) || String(pin.title || properties.shapeName),
-    cityZh: localCity || String(pin.title || ''),
+    cityEn: nzCityNames.get(localCity) || nzCityNames.get(titleCity) || String(properties.shapeName || titleCity),
+    cityZh: localCity || titleCity,
     parentId,
     parentEn: String(properties.shapeName || ''),
     parentZh: nzNamesZh.get(parentId) || String(properties.shapeName || '')

@@ -59,7 +59,7 @@ test('language switch remains visible and updates all interface chrome', async (
 test('deployed country labels follow the selected locale', async ({ page }) => {
   test.skip(!process.env.TRAVEL_SMOKE_ORIGIN?.startsWith('https://'), 'production API data required');
   await page.addInitScript(() => window.localStorage.setItem('travel-locale', 'zh'));
-  const response = await page.request.get('/api/pins');
+  const response = await page.request.get(`/api/pins?smoke=${Date.now()}`, { headers: { 'cache-control': 'no-cache' } });
   const payload = await response.json() as { pins: Array<{ country_code?: string; place_names?: { zh?: string; en?: string } }> };
   const countryPins = payload.pins.filter((pin) => pin.country_code === 'CN');
   const englishByChinese = new Map(countryPins
@@ -78,6 +78,18 @@ test('deployed country labels follow the selected locale', async ({ page }) => {
   expect(expectedEnglish.every(Boolean)).toBeTruthy();
   await page.locator('.action-language').click();
   await expect.poll(async () => (await labels.allTextContents()).sort()).toEqual(expectedEnglish.map(String).sort());
+
+  const newZealandPins = payload.pins.filter((pin) => pin.country_code === 'NZ');
+  const expectedNewZealandEnglish = newZealandPins.map((pin) => pin.place_names?.en).filter(Boolean).map(String).sort();
+  const expectedNewZealandChinese = newZealandPins.map((pin) => pin.place_names?.zh).filter(Boolean).map(String).sort();
+  expect(expectedNewZealandEnglish).toEqual(['Auckland', 'Queenstown', 'Wellington']);
+  expect(expectedNewZealandChinese).toEqual(['奥克兰', '惠灵顿', '皇后镇'].sort());
+  await page.locator('.action-map').click();
+  await page.locator('.country-menu button').filter({ hasText: 'New Zealand' }).click();
+  await expect(labels).toHaveCount(newZealandPins.length);
+  await expect.poll(async () => (await labels.allTextContents()).sort()).toEqual(expectedNewZealandEnglish);
+  await page.locator('.action-language').click();
+  await expect.poll(async () => (await labels.allTextContents()).sort()).toEqual(expectedNewZealandChinese);
 });
 
 test('desktop management keeps the map interactive beside a fixed editor drawer', async ({ page }, testInfo) => {
