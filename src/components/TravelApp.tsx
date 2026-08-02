@@ -65,6 +65,7 @@ const PIN_ASSETS: Record<string, string> = {
 };
 const PHOTO_STYLES = ['photo-classic', 'photo-landscape', 'photo-portrait'] as const;
 const COUNTRY_EXTENT: [number, number, number, number] = [0, -3072, 4096, 0];
+const PIN_DETAIL_ZOOM = 3;
 
 interface DraftPin {
   id?: string;
@@ -564,7 +565,7 @@ export default function TravelApp({ manageRequested = false }: Props) {
       }
       const pinCountry = pin.country_code ? countries.find((country) => country.countryCode === pin.country_code) : null;
       if (pinCountry && (!activeCountry || activeCountry.countryCode !== pinCountry.countryCode)) {
-        pendingFocusRef.current = { coordinate: [pin.lng, pin.lat], zoom: 5 };
+        pendingFocusRef.current = { coordinate: [pin.lng, pin.lat], zoom: PIN_DETAIL_ZOOM };
         await selectCountry(pinCountry);
       }
       const map = mapRef.current;
@@ -576,7 +577,7 @@ export default function TravelApp({ manageRequested = false }: Props) {
       if (updateAddress && window.location.pathname !== `/p/${pin.id}`) history.pushState({ pinId: pin.id }, '', `/p/${pin.id}`);
       const coordinate = transform([pin.lng, pin.lat], 'EPSG:4326', activeProjectionRef.current);
       if (map && activeCountry) {
-        focusViewOnPin(map.getView(), map, coordinate, (countryBaseResolutionRef.current || 1) / 2 ** 5, 420);
+        focusViewOnPin(map.getView(), map, coordinate, (countryBaseResolutionRef.current || 1) / 2 ** PIN_DETAIL_ZOOM, 420);
       }
     } catch {
       showToast(t('notFoundTitle'));
