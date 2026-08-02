@@ -6,6 +6,7 @@ import {
   normalizeAdministrativeName,
   normalizeSearchText
 } from './lib/footprint-search';
+import { mergeLocalizedPlaceNames } from './lib/place-names';
 
 interface PinRow {
   id: string;
@@ -24,6 +25,8 @@ interface PinRow {
   deleted_at: string | null;
   created_at: string;
   updated_at: string;
+  region_name_en: string | null;
+  region_name_zh: string | null;
 }
 
 interface MediaRow {
@@ -287,20 +290,25 @@ async function serializePin(env: Env, row: PinRow): Promise<Record<string, unkno
     FROM pin_media pm JOIN media_assets m ON m.id = pm.media_id
     WHERE pm.pin_id = ? ORDER BY pm.sort_order
   `).bind(row.id).all<MediaRow>();
+  const { region_name_en, region_name_zh, ...pin } = row;
   return {
-    ...row,
-    place_names: row.place_names ? JSON.parse(row.place_names) as unknown : null,
+    ...pin,
+    place_names: mergeLocalizedPlaceNames(row.place_names, { en: region_name_en, zh: region_name_zh }),
     media: mediaResult.results.map((media) => ({ ...media, url: mediaUrl(media.id) }))
   };
 }
 
 async function getPin(env: Env, id: string, includeDeleted = false): Promise<Record<string, unknown> | null> {
-  const row = await env.DB.prepare(`SELECT * FROM pins WHERE id = ? ${includeDeleted ? '' : 'AND deleted_at IS NULL'}`).bind(id).first<PinRow>();
+  const row = await env.DB.prepare(`SELECT p.*,r.name_en AS region_name_en,r.name_zh AS region_name_zh
+    FROM pins p LEFT JOIN regions r ON r.region_id=p.region_id
+    WHERE p.id = ? ${includeDeleted ? '' : 'AND p.deleted_at IS NULL'}`).bind(id).first<PinRow>();
   return row ? serializePin(env, row) : null;
 }
 
 async function listPins(env: Env): Promise<Array<Record<string, unknown>>> {
-  const rows = await env.DB.prepare('SELECT * FROM pins WHERE deleted_at IS NULL ORDER BY COALESCE(event_date, created_at) DESC').all<PinRow>();
+  const rows = await env.DB.prepare(`SELECT p.*,r.name_en AS region_name_en,r.name_zh AS region_name_zh
+    FROM pins p LEFT JOIN regions r ON r.region_id=p.region_id
+    WHERE p.deleted_at IS NULL ORDER BY COALESCE(p.event_date, p.created_at) DESC`).all<PinRow>();
   return Promise.all(rows.results.map((row) => serializePin(env, row)));
 }
 

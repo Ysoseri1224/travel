@@ -56,6 +56,30 @@ test('language switch remains visible and updates all interface chrome', async (
   await expect(page.locator('.modal-paper h2')).toHaveText('Enter map management');
 });
 
+test('deployed country labels follow the selected locale', async ({ page }) => {
+  test.skip(!process.env.TRAVEL_SMOKE_ORIGIN?.startsWith('https://'), 'production API data required');
+  await page.addInitScript(() => window.localStorage.setItem('travel-locale', 'zh'));
+  const response = await page.request.get('/api/pins');
+  const payload = await response.json() as { pins: Array<{ country_code?: string; place_names?: { zh?: string; en?: string } }> };
+  const countryPins = payload.pins.filter((pin) => pin.country_code === 'CN');
+  const englishByChinese = new Map(countryPins
+    .filter((pin) => pin.place_names?.zh && pin.place_names?.en)
+    .map((pin) => [pin.place_names!.zh!, pin.place_names!.en!]));
+  expect(englishByChinese.size).toBeGreaterThan(0);
+
+  await page.goto('/');
+  await page.locator('.action-map').click();
+  await page.locator('.country-menu button').filter({ hasText: '中华人民共和国' }).click();
+  const labels = page.locator('.place-label');
+  await expect(labels).toHaveCount(countryPins.length);
+  await expect(labels.first()).toBeVisible();
+  const chineseLabels = await labels.allTextContents();
+  const expectedEnglish = chineseLabels.map((name) => englishByChinese.get(name));
+  expect(expectedEnglish.every(Boolean)).toBeTruthy();
+  await page.locator('.action-language').click();
+  await expect.poll(async () => (await labels.allTextContents()).sort()).toEqual(expectedEnglish.map(String).sort());
+});
+
 test('desktop management keeps the map interactive beside a fixed editor drawer', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== 'desktop', 'editing is desktop-only');
   await page.goto('/manage');
