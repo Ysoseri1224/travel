@@ -12,6 +12,7 @@
     "render:country": "npm run prepare:country && npm --prefix map-renderer run render:preview && node scripts/package-country.mjs",
     "upload:country": "node scripts/upload-country-package.mjs",
     "build:regions": "node scripts/build-region-catalog.mjs",
+    "backfill:region-hierarchy": "node scripts/generate-region-hierarchy-backfill.mjs",
     "build:country-index": "node scripts/build-country-index.mjs",
     "build:admin": "node --max-old-space-size=8192 scripts/build-admin-pmtiles.mjs",
     "upload:tiles": "node scripts/upload-tiles.mjs",

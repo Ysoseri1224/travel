@@ -26,7 +26,9 @@ import {
   Map as MapIcon, MapPin, Pencil, Search, Trash2, Upload, X
 } from 'lucide-react';
 import { detectLocale, translate, type Locale, type TranslationKey } from '../lib/i18n';
-import type { MediaAsset, Pin, PlaceCandidate, SessionState } from '../lib/types';
+import type {
+  FootprintSearchResponse, FootprintSearchResult, MediaAsset, Pin, PlaceCandidate, SessionState
+} from '../lib/types';
 
 declare global {
   interface Window {
@@ -216,13 +218,14 @@ export default function TravelApp({ manageRequested = false }: Props) {
   const openViewRef = useRef<{ center: number[]; resolution: number } | null>(null);
   const initialPathHandled = useRef(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const footprintSearchAbortRef = useRef<AbortController | null>(null);
   const authRevisionRef = useRef(0);
   const permissionRef = useRef({ authenticated: false, managementActive: false });
   const scaleRef = useRef<HTMLDivElement>(null);
   const scaleFrameRef = useRef<number | null>(null);
   const activeProjectionRef = useRef<Projection>(MAP_PROJECTION);
   const countryBaseResolutionRef = useRef<number | null>(null);
-  const pendingFocusRef = useRef<{ coordinate: [number, number]; zoom: number } | null>(null);
+  const pendingFocusRef = useRef<{ coordinate: [number, number]; zoom: number; centered?: boolean } | null>(null);
   const editorStateRef = useRef<{ draft: DraftPin | null; dirty: boolean }>({ draft: null, dirty: false });
 
   const [locale, setLocale] = useState<Locale>('zh');
@@ -234,7 +237,11 @@ export default function TravelApp({ manageRequested = false }: Props) {
   const [query, setQuery] = useState('');
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState(false);
-  const [candidates, setCandidates] = useState<PlaceCandidate[]>([]);
+  const [searchResults, setSearchResults] = useState<FootprintSearchResult[]>([]);
+  const [searchScope, setSearchScope] = useState<FootprintSearchResponse['scope']>('records');
+  const [searchLabel, setSearchLabel] = useState('');
+  const [searchedQuery, setSearchedQuery] = useState('');
+  const [searchRegionIds, setSearchRegionIds] = useState<string[]>([]);
   const [draftCandidates, setDraftCandidates] = useState<PlaceCandidate[]>([]);
   const [draftSearching, setDraftSearching] = useState(false);
   const [draftSearchError, setDraftSearchError] = useState(false);
@@ -539,7 +546,8 @@ export default function TravelApp({ manageRequested = false }: Props) {
       const request = pendingFocusRef.current;
       const coordinate = transform(request.coordinate, 'EPSG:4326', projection);
       pendingFocusRef.current = null;
-      focusViewOnPin(view, map, coordinate, baseResolution / 2 ** request.zoom, 520);
+      if (request.centered) view.animate({ center: coordinate, resolution: baseResolution / 2 ** request.zoom, duration: 520 });
+      else focusViewOnPin(view, map, coordinate, baseResolution / 2 ** request.zoom, 520);
     }
     setMapReady(true);
     return () => {
@@ -632,7 +640,7 @@ export default function TravelApp({ manageRequested = false }: Props) {
     const projection = activeProjectionRef.current;
     for (const pin of pins.filter((item) => !activeCountry || item.country_code === activeCountry.countryCode)) {
       const element = document.createElement('div');
-      element.className = `pin-anchor${selected?.id === pin.id ? ' is-selected' : ''}`;
+      element.className = `pin-anchor${selected?.id === pin.id ? ' is-selected' : ''}${pin.region_id && searchRegionIds.includes(pin.region_id) ? ' is-search-match' : ''}`;
       element.style.setProperty('--rotation', `${((pin.id.split('').reduce((sum, char) => sum + char.charCodeAt(0), 0) % 9) - 4) * 0.72}deg`);
       const button = document.createElement('button');
       button.className = 'pin-button';
@@ -693,7 +701,7 @@ export default function TravelApp({ manageRequested = false }: Props) {
       map.addOverlay(overlay);
       pinOverlaysRef.current.push(overlay);
     }
-  }, [activeCountry, locale, mapReady, openPin, pins, selected?.id, t]);
+  }, [activeCountry, locale, mapReady, openPin, pins, searchRegionIds, selected?.id, t]);
 
   useEffect(() => {
     if (!selected || draft) {
@@ -774,6 +782,53 @@ export default function TravelApp({ manageRequested = false }: Props) {
     };
   }, [draft?.place_name, draft?.region_id, locale]);
 
+  const runFootprintSearch = useCallback(async (value: string) => {
+    const normalized = value.normalize('NFKC').trim();
+    footprintSearchAbortRef.current?.abort();
+    if (!normalized) {
+      setSearchResults([]);
+      setSearchLabel('');
+      setSearchedQuery('');
+      setSearching(false);
+      setSearchError(false);
+      return;
+    }
+    const controller = new AbortController();
+    footprintSearchAbortRef.current = controller;
+    setSearching(true);
+    setSearchError(false);
+    try {
+      const response = await api<FootprintSearchResponse>(`/api/search/footprints?q=${encodeURIComponent(normalized)}&lang=${locale}`, { signal: controller.signal });
+      if (controller.signal.aborted) return;
+      setSearchResults(response.results);
+      setSearchScope(response.scope);
+      setSearchLabel(response.label);
+      setSearchedQuery(normalized);
+    } catch (error) {
+      if ((error as Error).name === 'AbortError') return;
+      setSearchResults([]);
+      setSearchLabel('');
+      setSearchedQuery(normalized);
+      setSearchError(true);
+    } finally {
+      if (!controller.signal.aborted) setSearching(false);
+    }
+  }, [locale]);
+
+  useEffect(() => {
+    if (!searchOpen) {
+      footprintSearchAbortRef.current?.abort();
+      return;
+    }
+    const normalized = query.normalize('NFKC').trim();
+    if (!normalized) {
+      void runFootprintSearch('');
+      return;
+    }
+    const timer = window.setTimeout(() => void runFootprintSearch(normalized), 240);
+    return () => window.clearTimeout(timer);
+  }, [query, runFootprintSearch, searchOpen]);
+
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;
@@ -793,55 +848,28 @@ export default function TravelApp({ manageRequested = false }: Props) {
     return () => window.removeEventListener('keydown', onKey);
   }, [closePanel, lightbox, searchOpen]);
 
-  const submitSearch = async (event: React.SyntheticEvent<HTMLFormElement>) => {
+  const submitSearch = (event: React.SyntheticEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const normalized = query.trim();
-    if (!normalized) return;
-    setSearching(true);
-    setSearchError(false);
-    try {
-      const response = await api<{ candidates: PlaceCandidate[] }>(`/api/search/places?q=${encodeURIComponent(normalized)}&lang=${locale}`);
-      setCandidates(response.candidates);
-    } catch {
-      setCandidates([]);
-      setSearchError(true);
-    } finally {
-      setSearching(false);
-    }
+    void runFootprintSearch(query);
   };
 
-  const chooseCandidate = async (candidate: PlaceCandidate) => {
-    const managing = session.authenticated && managementActive && !isMobileEditor();
-    const country = countries.find((item) => item.countryCode === candidate.countryCode);
-    const countryChanged = Boolean(country && (!activeCountry || activeCountry.countryCode !== country.countryCode));
-    if (country && countryChanged) {
-      pendingFocusRef.current = { coordinate: [candidate.lng, candidate.lat], zoom: managing ? 0 : 5 };
-      await selectCountry(country);
-    }
+  const chooseSearchResult = async (result: FootprintSearchResult) => {
     setSearchOpen(false);
-    if (managing) {
-      if (draft) {
-        const nextDraft = { ...draft, lng: candidate.lng, lat: candidate.lat, place_name: candidate.name, region_id: candidate.regionId, country_code: candidate.countryCode };
-        editorStateRef.current = { draft: nextDraft, dirty: true };
-        setDraft(nextDraft);
-        setDirty(true);
-      } else {
-        requestEditor({ ...freshDraft(candidate.lng, candidate.lat), place_name: candidate.name, region_id: candidate.regionId, country_code: candidate.countryCode }, null);
-      }
-      if (!countryChanged) {
-        const coordinate = transform([candidate.lng, candidate.lat], 'EPSG:4326', activeProjectionRef.current);
-        const view = mapRef.current?.getView();
-        if (view) view.animate({ center: coordinate, resolution: view.getResolution(), duration: 360 });
-      }
+    setSearchRegionIds(result.regionIds?.length ? result.regionIds : [result.regionId]);
+    if (result.kind === 'pin' && result.pinId) {
+      await openPin(result.pinId);
       return;
     }
-    const coordinate = transform([candidate.lng, candidate.lat], 'EPSG:4326', activeProjectionRef.current);
-    const base = countryBaseResolutionRef.current || 1;
-    mapRef.current?.getView().animate({ center: coordinate, resolution: base / 2 ** 5, duration: 560 });
-    if (draft) {
-      setDraft({ ...draft, lng: candidate.lng, lat: candidate.lat, place_name: candidate.name, region_id: candidate.regionId, country_code: candidate.countryCode });
-      setDirty(true);
+    const country = countries.find((item) => item.countryCode === result.countryCode);
+    const countryChanged = Boolean(country && (!activeCountry || activeCountry.countryCode !== country.countryCode));
+    if (country && countryChanged) {
+      pendingFocusRef.current = { coordinate: [result.lng, result.lat], zoom: PIN_DETAIL_ZOOM, centered: true };
+      await selectCountry(country);
+      return;
     }
+    const coordinate = transform([result.lng, result.lat], 'EPSG:4326', activeProjectionRef.current);
+    const base = countryBaseResolutionRef.current || 1;
+    mapRef.current?.getView().animate({ center: coordinate, resolution: base / 2 ** PIN_DETAIL_ZOOM, duration: 520 });
   };
 
   const chooseDraftCandidate = async (candidate: PlaceCandidate) => {
@@ -1068,26 +1096,29 @@ export default function TravelApp({ manageRequested = false }: Props) {
       {searchOpen && (
         <section className="search-panel floating-paper" aria-label={t('search')}>
           <form className="search-row" onSubmit={submitSearch}>
-            <Search size={18} aria-hidden="true" />
+            <button className="icon-command search-submit" type="submit" aria-label={t('search')} title={t('search')}><Search aria-hidden="true" /></button>
             <input ref={searchInputRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t('searchPlaceholder')} aria-label={t('searchPlaceholder')} />
             <button className="language-switch" type="button" onClick={switchLocale} title={locale === 'zh' ? t('switchEnglish') : t('switchChinese')} aria-label={locale === 'zh' ? t('switchEnglish') : t('switchChinese')}><Languages size={15} aria-hidden="true" /> {locale === 'zh' ? 'EN' : '中'}</button>
             <button className="icon-command" type="button" aria-label={t('close')} title={t('close')} onClick={() => setSearchOpen(false)}><X /></button>
           </form>
-          {(searching || searchError || (!searching && query && !candidates.length)) && <p className="search-status">{searching ? t('searching') : searchError ? t('searchError') : t('searchEmpty')}</p>}
-          {!!candidates.length && (
-            <ul className="search-results" aria-label={t('locationResults')}>
-              {candidates.map((candidate) => (
-                <li className="search-result" key={candidate.id}>
-                  <button type="button" onClick={() => chooseCandidate(candidate)}>
-                    <span className="result-name">{candidate.name}</span>
-                    <span className="result-address">{candidate.address}</span>
-                    <span className="result-count">{candidate.pinCount === 0 ? t('searchCountNone') : candidate.pinCount === 1 ? t('searchCountOne') : t('searchCountMany', { count: candidate.pinCount })}</span>
+          {(searching || searchError || (!searching && searchedQuery === query.normalize('NFKC').trim() && !!searchedQuery && !searchResults.length)) && <p className="search-status">{searching ? t('searching') : searchError ? t('searchError') : t('searchEmpty')}</p>}
+          {!!searchResults.length && (
+            <>
+              <p className="search-summary">{searchScope === 'country' ? t('searchScopeCountry', { name: searchLabel }) : searchScope === 'province' ? t('searchScopeProvince', { name: searchLabel }) : searchScope === 'city' ? t('searchScopeCity') : t('searchScopeRecords')}</p>
+              <ul className="search-results" aria-label={t('footprintResults')}>
+              {searchResults.map((result) => (
+                <li className="search-result" key={result.id}>
+                  <button type="button" onClick={() => void chooseSearchResult(result)}>
+                    <span className="result-name">{result.name}</span>
+                    <span className="result-address">{result.subtitle}</span>
+                    {!!result.excerpt && <span className="result-excerpt">{result.excerpt}</span>}
+                    <span className="result-count">{result.kind === 'pin' ? t('searchResultRecord') : result.pinCount === 1 ? t('searchCountOne') : t('searchCountMany', { count: result.pinCount })}</span>
                   </button>
                 </li>
               ))}
-            </ul>
+              </ul>
+            </>
           )}
-          {!!candidates.length && <p className="search-attribution">{t('searchAttribution', { provider: [...new Set(candidates.map((item) => item.provider))].join(' / ') })}</p>}
         </section>
       )}
 
@@ -1104,7 +1135,7 @@ export default function TravelApp({ manageRequested = false }: Props) {
                   <p className="search-status">{t('dragPin')}</p>
                   <label className="field"><span>{t('title')}</span><input required maxLength={160} value={draft.title} onChange={(event) => updateDraft('title', event.target.value)} placeholder={t('titlePlaceholder')} /></label>
                   <div className="field-row">
-                    <label className="field location-field"><span>{t('place')}</span><input required value={draft.place_name} onChange={(event) => updateDraftPlace(event.target.value)} placeholder={t('placePlaceholder')} autoComplete="off" />{draft.region_id ? <small className="location-confirmed">{t('placeConfirmed')}</small> : <small>{t('placeRequired')}</small>}{(draftSearching || draftSearchError) && <small>{draftSearching ? t('searching') : t('searchError')}</small>}{!!draftCandidates.length && <ul className="draft-location-results">{draftCandidates.map((candidate) => <li key={candidate.id}><button type="button" onClick={() => chooseDraftCandidate(candidate)}><strong>{candidate.name}</strong><span>{candidate.address}</span></button></li>)}</ul>}</label>
+                    <label className="field location-field"><span>{t('place')}</span><input required value={draft.place_name} onChange={(event) => updateDraftPlace(event.target.value)} placeholder={t('placePlaceholder')} autoComplete="off" />{draft.region_id ? <small className="location-confirmed">{t('placeConfirmed')}</small> : <small>{t('placeRequired')}</small>}{(draftSearching || draftSearchError) && <small>{draftSearching ? t('placeSearching') : t('placeSearchError')}</small>}{!!draftCandidates.length && <ul className="draft-location-results">{draftCandidates.map((candidate) => <li key={candidate.id}><button type="button" onClick={() => chooseDraftCandidate(candidate)}><strong>{candidate.name}</strong><span>{candidate.address}</span></button></li>)}</ul>}</label>
                     <label className="field"><span>{t('dateOptional')}</span><input type="date" value={draft.event_date} onChange={(event) => updateDraft('event_date', event.target.value)} /></label>
                   </div>
                   <div className="field">

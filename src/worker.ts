@@ -1,3 +1,12 @@
+import {
+  administrativeNameMatches,
+  cityNameFromPlace,
+  countrySearchAliases,
+  markdownSearchExcerpt,
+  normalizeAdministrativeName,
+  normalizeSearchText
+} from './lib/footprint-search';
+
 interface PinRow {
   id: string;
   title: string;
@@ -57,6 +66,9 @@ interface Candidate {
   regionId: string;
   regionName: string;
   countryCode: string;
+  parentRegionId: string;
+  parentName: string;
+  resultLocale: 'zh' | 'en';
   pinCount: number;
   provider: 'Amap' | 'Google';
 }
@@ -564,6 +576,9 @@ interface CatalogRegion {
   name: string;
   countryCode: string;
   sourceId: string;
+  parentRegionId?: string;
+  parentNameEn?: string;
+  parentNameZh?: string;
   bbox: [number, number, number, number];
   centroid: [number, number];
   geometry: { type: 'Polygon' | 'MultiPolygon'; coordinates: number[][][] | number[][][][] };
@@ -636,18 +651,34 @@ async function catalogRegionAt(env: Env, countryCode: string, lng: number, lat: 
 async function resolveCandidateRegion(candidate: Candidate, lang: 'zh' | 'en', env: Env): Promise<Candidate | null> {
   const region = await catalogRegionAt(env, candidate.countryCode, candidate.lng, candidate.lat);
   if (!region) return null;
-  const nameZh = lang === 'zh' ? candidate.regionName || region.name : null;
-  const nameEn = lang === 'en' ? candidate.regionName || region.name : region.name;
+  const resultLocale = candidate.resultLocale || lang;
+  const nameZh = resultLocale === 'zh' ? candidate.regionName || region.name : null;
+  const nameEn = resultLocale === 'en' ? candidate.regionName || region.name : region.name;
+  const parentRegionId = region.parentRegionId || candidate.parentRegionId || null;
+  const parentNameEn = region.parentNameEn || (resultLocale === 'en' ? candidate.parentName : null);
+  const parentNameZh = region.parentNameZh || (resultLocale === 'zh' ? candidate.parentName : null);
   await env.DB.prepare(`INSERT INTO regions
-    (region_id,country_code,name_en,name_zh,parent_name_en,parent_name_zh,centroid_lat,centroid_lng,source_id)
-    VALUES (?,?,?,?,?,?,?,?,?)
+    (region_id,country_code,name_en,name_zh,parent_region_id,parent_name_en,parent_name_zh,centroid_lat,centroid_lng,source_id)
+    VALUES (?,?,?,?,?,?,?,?,?,?)
     ON CONFLICT(region_id) DO UPDATE SET
       name_en=excluded.name_en,
       name_zh=COALESCE(excluded.name_zh,regions.name_zh),
+      parent_region_id=COALESCE(excluded.parent_region_id,regions.parent_region_id),
       parent_name_en=COALESCE(excluded.parent_name_en,regions.parent_name_en),
       parent_name_zh=COALESCE(excluded.parent_name_zh,regions.parent_name_zh),
       updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')`)
-    .bind(region.id, candidate.countryCode, nameEn, nameZh, lang === 'en' ? candidate.regionName : null, lang === 'zh' ? candidate.regionName : null, region.centroid[1], region.centroid[0], region.sourceId)
+    .bind(
+      region.id,
+      candidate.countryCode,
+      nameEn,
+      nameZh,
+      parentRegionId,
+      parentNameEn,
+      parentNameZh,
+      region.centroid[1],
+      region.centroid[0],
+      region.sourceId
+    )
     .run();
   return { ...candidate, regionId: region.id, regionName: candidate.regionName || region.name };
 }
@@ -663,10 +694,25 @@ async function amapSearch(query: string, lang: string, env: Env): Promise<Candid
     const location = typeof poi.location === 'string' ? poi.location.split(',').map(Number) : [];
     if (location.length !== 2 || !location.every(Number.isFinite)) return [];
     const [lng, lat] = gcjToWgs(location[0], location[1]);
-    const city = String(poi.cityname || poi.pname || '');
+    const province = String(poi.pname || '');
+    const city = String(poi.cityname || province || '');
     const district = String(poi.adname || '');
-    const regionName = [city, district].filter(Boolean).join(' · ');
-    return [{ id: `amap-${String(poi.id || `${lng},${lat}`)}`, name: String(poi.name || query), address: [regionName, String(poi.address || '')].filter(Boolean).join(' · '), lat, lng, regionId: '', regionName, countryCode: 'CN', pinCount: 0, provider: 'Amap' }];
+    const regionName = city || district || province;
+    return [{
+      id: `amap-${String(poi.id || `${lng},${lat}`)}`,
+      name: String(poi.name || query),
+      address: [[city, district].filter(Boolean).join(' · '), String(poi.address || '')].filter(Boolean).join(' · '),
+      lat,
+      lng,
+      regionId: '',
+      regionName,
+      countryCode: 'CN',
+      parentRegionId: String(poi.pcode || province),
+      parentName: province,
+      resultLocale: 'zh',
+      pinCount: 0,
+      provider: 'Amap'
+    }];
   });
 }
 
@@ -684,17 +730,218 @@ async function googleSearch(query: string, lang: string, env: Env): Promise<Cand
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) return [];
     const components = (result.address_components || []) as Array<{ long_name?: string; short_name?: string; types?: string[] }>;
     const locality = components.find((item) => item.types?.some((type) => ['locality', 'administrative_area_level_2'].includes(type)))?.long_name || '';
+    const parentComponent = components.find((item) => item.types?.includes('administrative_area_level_1'));
     const countryComponent = components.find((item) => item.types?.includes('country'));
     const country = countryComponent?.long_name || '';
     const countryCode = String(countryComponent?.short_name || '').toUpperCase();
     if (!/^[A-Z]{2}$/.test(countryCode)) return [];
     const regionName = [locality, country].filter(Boolean).join(' · ');
     const name = components.find((item) => item.types?.some((type) => ['point_of_interest', 'establishment'].includes(type)))?.long_name || String(result.formatted_address || query).split(',')[0];
-    return [{ id: `google-${String(result.place_id || `${lng},${lat}`)}`, name, address: String(result.formatted_address || regionName), lat: Number(lat), lng: Number(lng), regionId: '', regionName, countryCode, pinCount: 0, provider: 'Google' }];
+    return [{
+      id: `google-${String(result.place_id || `${lng},${lat}`)}`,
+      name,
+      address: String(result.formatted_address || regionName),
+      lat: Number(lat),
+      lng: Number(lng),
+      regionId: '',
+      regionName: locality || country,
+      countryCode,
+      parentRegionId: String(parentComponent?.short_name || parentComponent?.long_name || ''),
+      parentName: String(parentComponent?.long_name || ''),
+      resultLocale: lang === 'zh' ? 'zh' : 'en',
+      pinCount: 0,
+      provider: 'Google'
+    }];
   });
 }
 
+interface VisitedCountryRow {
+  country_code: string;
+  name_en: string | null;
+  name_zh: string | null;
+}
+
+interface VisitedRegionRow {
+  region_id: string;
+  country_code: string;
+  name_en: string;
+  name_zh: string | null;
+  parent_region_id: string | null;
+  parent_name_en: string | null;
+  parent_name_zh: string | null;
+  centroid_lat: number;
+  centroid_lng: number;
+  pin_count: number;
+  sample_place_name: string | null;
+}
+
+interface FootprintPinRow {
+  id: string;
+  title: string;
+  lat: number;
+  lng: number;
+  place_name: string | null;
+  place_names: string | null;
+  region_id: string;
+  country_code: string;
+  event_date: string | null;
+  content: string;
+}
+
+function localizedRegionName(row: VisitedRegionRow, lang: 'zh' | 'en'): string {
+  const place = cityNameFromPlace(row.sample_place_name);
+  return lang === 'zh' ? row.name_zh || place || row.name_en : row.name_en || place || row.name_zh || row.region_id;
+}
+
+function localizedParentName(row: VisitedRegionRow, lang: 'zh' | 'en'): string {
+  return lang === 'zh' ? row.parent_name_zh || row.parent_name_en || '' : row.parent_name_en || row.parent_name_zh || '';
+}
+
+function regionSearchResult(row: VisitedRegionRow, lang: 'zh' | 'en', countryName: string): Record<string, unknown> {
+  return {
+    id: `region:${row.region_id}`,
+    kind: 'region',
+    name: localizedRegionName(row, lang),
+    subtitle: [localizedParentName(row, lang), countryName].filter(Boolean).join(' · '),
+    excerpt: '',
+    lat: Number(row.centroid_lat),
+    lng: Number(row.centroid_lng),
+    countryCode: row.country_code,
+    regionId: row.region_id,
+    regionIds: [row.region_id],
+    pinCount: Number(row.pin_count)
+  };
+}
+
+function groupedRegionSearchResults(rows: VisitedRegionRow[], lang: 'zh' | 'en', countries: Map<string, { nameEn: string; nameZh: string }>): Array<Record<string, unknown>> {
+  const grouped = new Map<string, {
+    row: VisitedRegionRow;
+    countryName: string;
+    name: string;
+    regionIds: string[];
+    pinCount: number;
+    weightedLat: number;
+    weightedLng: number;
+  }>();
+  for (const row of rows) {
+    const name = localizedRegionName(row, lang);
+    const key = `${row.country_code}:${normalizeAdministrativeName(name) || row.region_id}`;
+    const pinCount = Number(row.pin_count);
+    const existing = grouped.get(key);
+    if (existing) {
+      existing.regionIds.push(row.region_id);
+      existing.pinCount += pinCount;
+      existing.weightedLat += Number(row.centroid_lat) * pinCount;
+      existing.weightedLng += Number(row.centroid_lng) * pinCount;
+      continue;
+    }
+    grouped.set(key, {
+      row,
+      countryName: lang === 'zh' ? countries.get(row.country_code)?.nameZh || row.country_code : countries.get(row.country_code)?.nameEn || row.country_code,
+      name,
+      regionIds: [row.region_id],
+      pinCount,
+      weightedLat: Number(row.centroid_lat) * pinCount,
+      weightedLng: Number(row.centroid_lng) * pinCount
+    });
+  }
+  return [...grouped.values()]
+    .sort((left, right) => left.name.localeCompare(right.name, lang === 'zh' ? 'zh-CN' : 'en'))
+    .map((group) => ({
+      ...regionSearchResult(group.row, lang, group.countryName),
+      id: `region:${group.row.country_code}:${normalizeAdministrativeName(group.name)}`,
+      name: group.name,
+      lat: group.weightedLat / group.pinCount,
+      lng: group.weightedLng / group.pinCount,
+      regionIds: group.regionIds,
+      pinCount: group.pinCount
+    }));
+}
+
+function parseLocalizedPlace(row: FootprintPinRow, lang: 'zh' | 'en'): string {
+  try {
+    const names = row.place_names ? JSON.parse(row.place_names) as Record<string, string> : null;
+    return names?.[lang] || row.place_name || '';
+  } catch {
+    return row.place_name || '';
+  }
+}
+
+async function searchFootprints(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const query = (url.searchParams.get('q') || '').normalize('NFKC').trim().slice(0, 120);
+  const lang = url.searchParams.get('lang') === 'en' ? 'en' : 'zh';
+  if (!query) return json({ query: '', scope: 'records', label: '', results: [] });
+
+  const [countryRows, regionRows] = await Promise.all([
+    env.DB.prepare(`SELECT p.country_code,c.name_en,c.name_zh
+      FROM pins p LEFT JOIN countries c ON c.country_code=p.country_code
+      WHERE p.deleted_at IS NULL AND p.country_code IS NOT NULL
+      GROUP BY p.country_code,c.name_en,c.name_zh ORDER BY p.country_code`).all<VisitedCountryRow>(),
+    env.DB.prepare(`SELECT r.region_id,p.country_code,r.name_en,r.name_zh,r.parent_region_id,r.parent_name_en,r.parent_name_zh,
+      avg(p.lat) AS centroid_lat,avg(p.lng) AS centroid_lng,count(p.id) AS pin_count,min(p.place_name) AS sample_place_name
+      FROM pins p JOIN regions r ON r.region_id=p.region_id
+      WHERE p.deleted_at IS NULL AND p.country_code IS NOT NULL
+      GROUP BY r.region_id,p.country_code,r.name_en,r.name_zh,r.parent_region_id,r.parent_name_en,r.parent_name_zh`).all<VisitedRegionRow>()
+  ]);
+
+  const countries = new Map(countryRows.results.map((row) => [row.country_code, {
+    code: row.country_code,
+    nameEn: row.name_en || row.country_code,
+    nameZh: row.name_zh || row.name_en || row.country_code
+  }]));
+  const country = [...countries.values()].find((item) => administrativeNameMatches(query, ...countrySearchAliases(item.code, item.nameEn, item.nameZh)));
+  if (country) {
+    const results = groupedRegionSearchResults(regionRows.results.filter((row) => row.country_code === country.code), lang, countries);
+    return json({ query, scope: 'country', label: lang === 'zh' ? country.nameZh : country.nameEn, results });
+  }
+
+  const provinceRows = regionRows.results.filter((row) => administrativeNameMatches(query, row.parent_name_en, row.parent_name_zh));
+  if (provinceRows.length) {
+    const label = localizedParentName(provinceRows[0], lang);
+    const results = groupedRegionSearchResults(provinceRows, lang, countries);
+    return json({ query, scope: 'province', label, results });
+  }
+
+  const cityRows = regionRows.results.filter((row) => administrativeNameMatches(query, row.name_en, row.name_zh, cityNameFromPlace(row.sample_place_name)));
+  if (cityRows.length) {
+    const results = groupedRegionSearchResults(cityRows, lang, countries);
+    return json({ query, scope: 'city', label: localizedRegionName(cityRows[0], lang), results });
+  }
+
+  const escaped = query.replace(/[\\%_]/g, (value) => `\\${value}`);
+  const pattern = `%${escaped}%`;
+  const pins = await env.DB.prepare(`SELECT id,title,lat,lng,place_name,place_names,region_id,country_code,event_date,content
+    FROM pins WHERE deleted_at IS NULL AND region_id IS NOT NULL AND country_code IS NOT NULL AND (
+      title LIKE ? ESCAPE '\\' COLLATE NOCASE OR place_name LIKE ? ESCAPE '\\' COLLATE NOCASE OR
+      place_names LIKE ? ESCAPE '\\' COLLATE NOCASE OR content LIKE ? ESCAPE '\\' COLLATE NOCASE)
+    ORDER BY COALESCE(event_date,created_at) DESC LIMIT 40`).bind(pattern, pattern, pattern, pattern).all<FootprintPinRow>();
+  const normalizedQuery = normalizeSearchText(query);
+  const results = pins.results
+    .sort((left, right) => {
+      const score = (row: FootprintPinRow) => normalizeSearchText(row.title) === normalizedQuery ? 0
+        : normalizeSearchText(row.title).startsWith(normalizedQuery) ? 1
+          : normalizeSearchText(row.place_name || '').includes(normalizedQuery) ? 2 : 3;
+      return score(left) - score(right);
+    })
+    .map((row) => ({
+      id: `pin:${row.id}`,
+      kind: 'pin',
+      name: row.title,
+      subtitle: parseLocalizedPlace(row, lang),
+      excerpt: markdownSearchExcerpt(row.content, query),
+      lat: Number(row.lat),
+      lng: Number(row.lng),
+      countryCode: row.country_code,
+      regionId: row.region_id,
+      pinId: row.id,
+      pinCount: 1
+    }));
+  return json({ query, scope: 'records', label: query, results });
+}
+
 async function searchPlaces(request: Request, env: Env): Promise<Response> {
+  if (!(await currentSession(request, env))) return error('UNAUTHORIZED', 401);
   const url = new URL(request.url);
   const query = (url.searchParams.get('q') || '').normalize('NFKC').trim().slice(0, 120);
   const lang = url.searchParams.get('lang') === 'en' ? 'en' : 'zh';
@@ -864,6 +1111,7 @@ async function handleRequest(request: Request, env: Env, ctx: ExecutionContext):
     if (path === '/api/internal/country-build/callback') return handleCountryBuildCallback(request, env);
     if (path.startsWith('/api/auth/')) return handleAuth(request, env, path);
     if (path === '/api/countries' && request.method === 'GET') return json({ countries: await listReadyCountries(env) }, 200, { 'cache-control': 'public, max-age=60, stale-while-revalidate=300' });
+    if (path === '/api/search/footprints' && request.method === 'GET') return searchFootprints(request, env);
     if (path === '/api/search/places' && request.method === 'GET') return searchPlaces(request, env);
     if (path === '/api/media' || path.startsWith('/media/')) return handleMedia(request, env, path);
     if (path === '/api/pins' || path.startsWith('/api/pins/')) return handlePins(request, env, ctx, path);

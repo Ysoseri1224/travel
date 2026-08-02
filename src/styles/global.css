@@ -182,6 +182,7 @@ select:focus-visible {
   border: 1px solid rgba(80, 53, 32, .26);
   border-radius: 3px;
 }
+.search-submit { color: var(--paper-ink); }
 
 .icon-command {
   flex: 0 0 auto;
@@ -200,6 +201,7 @@ select:focus-visible {
 .icon-command svg { width: 18px; height: 18px; }
 
 .search-status { margin: 11px 2px 3px; color: var(--paper-muted); font-size: 12px; }
+.search-summary { margin: 13px 6px 2px; color: var(--paper-ink); font-size: 13px; font-weight: 600; }
 .search-results { list-style: none; padding: 0; margin: 10px -4px 0; max-height: min(54vh, 390px); overflow: auto; }
 .search-result button {
   width: 100%;
@@ -217,8 +219,8 @@ select:focus-visible {
 .search-result button:hover { background: rgba(83, 55, 32, .06); }
 .result-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .result-address { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--paper-muted); font-size: 12px; }
-.result-count { grid-row: 1 / span 2; grid-column: 2; align-self: center; color: var(--verdigris); font-size: 11px; }
-.search-attribution { margin: 10px 2px 0; color: var(--paper-muted); font: 10px/1.4 sans-serif; }
+.result-excerpt { grid-column: 1; overflow: hidden; color: rgba(73, 52, 36, .74); font-size: 11px; line-height: 1.45; }
+.result-count { grid-row: 1 / span 3; grid-column: 2; align-self: center; color: var(--verdigris); font-size: 11px; white-space: nowrap; }
 .language-switch { margin-left: auto; padding: 3px 5px; border: 0; background: transparent; color: var(--paper-muted); cursor: pointer; font-size: 12px; }
 
 .pin-anchor { position: relative; width: 52px; height: 58px; pointer-events: auto; }
@@ -240,6 +242,8 @@ select:focus-visible {
 }
 .pin-button img { display: block; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
 .pin-button:hover { transform: translateY(-2px); filter: drop-shadow(2px 6px 3px rgba(30,18,12,.22)); }
+.pin-anchor.is-search-match .pin-button { transform: translateY(-3px) scale(1.08); filter: drop-shadow(0 0 5px rgba(255, 244, 211, .96)) drop-shadow(2px 7px 4px rgba(65, 36, 20, .28)); }
+.pin-anchor.is-search-match .place-label { color: #4e301f; font-weight: 700; }
 .pin-button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; border-radius: 45%; }
 .world-mode .pin-button { cursor: default; }
 .world-mode .pin-button:disabled { opacity: .92; }

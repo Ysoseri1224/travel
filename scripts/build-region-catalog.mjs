@@ -54,6 +54,12 @@ function cellFor(lng, lat) {
   return [Math.floor((lng + 180) / cellSize), Math.floor((lat + 90) / cellSize)];
 }
 
+function localName(value) {
+  const names = String(value || '').split('|').map((item) => item.trim()).filter(Boolean);
+  const name = names.at(-1) || '';
+  return /^(?:na|<null>)$/i.test(name) ? '' : name;
+}
+
 const requested = (process.env.REGION_COUNTRIES || '').split(',').map((value) => value.trim().toUpperCase()).filter(Boolean);
 const files = (await readdir(adm2Dir)).filter((file) => file.endsWith('.geojson') && (!requested.length || requested.includes(path.basename(file, '.geojson').toUpperCase()))).sort();
 const catalogCountries = {};
@@ -72,13 +78,16 @@ for (const file of files) {
     const bbox = geometryBbox(feature.geometry);
     if (!bbox) continue;
     const properties = feature.properties || {};
-    const sourceId = String(properties.shapeID || properties.shapeISO || properties.shapeName || crypto.randomUUID()).replace(/[^a-zA-Z0-9_-]+/g, '-');
+    const sourceId = String(properties.shapeID || properties.GID_2 || properties.shapeISO || properties.shapeName || crypto.randomUUID()).replace(/[^a-zA-Z0-9_-]+/g, '-');
     const region = {
       id: `r1_${iso3.toLowerCase()}_${sourceId}`,
-      name: String(properties.shapeName || sourceId),
+      name: String(properties.shapeName || properties.NAME_2 || sourceId),
       countryCode: country.iso2,
       countryIso3: iso3,
       sourceId,
+      parentRegionId: String(properties.GID_1 || ''),
+      parentNameEn: String(properties.NAME_1 || ''),
+      parentNameZh: localName(properties.NL_NAME_1),
       bbox,
       centroid: [(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2],
       geometry: feature.geometry
@@ -90,6 +99,9 @@ for (const file of files) {
       countryCode: region.countryCode,
       countryIso3: region.countryIso3,
       sourceId: region.sourceId,
+      parentRegionId: region.parentRegionId,
+      parentNameEn: region.parentNameEn,
+      parentNameZh: region.parentNameZh,
       bbox: region.bbox,
       centroid: region.centroid
     };

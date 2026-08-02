@@ -40,6 +40,28 @@ export interface PlaceCandidate {
   provider: 'Amap' | 'Google';
 }
 
+export interface FootprintSearchResult {
+  id: string;
+  kind: 'region' | 'pin';
+  name: string;
+  subtitle: string;
+  excerpt: string;
+  lat: number;
+  lng: number;
+  countryCode: string;
+  regionId: string;
+  regionIds?: string[];
+  pinId?: string;
+  pinCount: number;
+}
+
+export interface FootprintSearchResponse {
+  query: string;
+  scope: 'country' | 'province' | 'city' | 'records';
+  label: string;
+  results: FootprintSearchResult[];
+}
+
 export interface SessionState {
   authenticated: boolean;
   csrfToken?: string;

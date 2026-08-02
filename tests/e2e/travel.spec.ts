@@ -17,9 +17,9 @@ test('world map renders with interactive search', async ({ page }, testInfo) => 
   const stats = await sharp(mapImage).stats();
   expect(stats.channels.slice(0, 3).every((channel) => channel.stdev > 8)).toBeTruthy();
   await page.locator('.action-search').click();
-  await page.locator('.search-row input').fill('星海广场');
-  await page.locator('.search-row input').press('Enter');
+  await page.locator('.search-row input').fill('中国');
   await expect(page.locator('.search-result').first()).toBeVisible();
+  await expect(page.locator('.search-summary')).toContainText(/去过的城市|Visited cities/);
   await page.screenshot({ path: testInfo.outputPath('search-results.png'), fullPage: true });
   expect(browserErrors).toEqual([]);
 });
